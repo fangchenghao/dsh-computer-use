@@ -372,7 +372,7 @@ describe.skipIf(!enabled)('clean Computer Use Profile installation', () => {
       const dump = await run('dsh', ['--profile', profile, '--dump-config'], { env: { DSH_HOME: home } })
       expect(dump.code, dump.stderr).toBe(0)
       expect(dump.stdout).toContain('- id: computer-use')
-      expect(dump.stdout).toContain("name: '@anionex/dsh-computer-use'")
+      expect(dump.stdout).toContain("name: '@fffangchenghao/dsh-computer-use'")
       expect(dump.stdout).toContain('focusPolicy: preserve')
       expect(dump.stdout).toContain('keyboardPolicy: activate')
       expect(dump.stdout).toContain('pointerInputPolicy: targeted')
@@ -546,10 +546,10 @@ describe.skipIf(!enabled)('clean Computer Use Profile installation', () => {
     }
 
     for (const profile of ['headless', 'web']) {
-      const remove = await run('dsh', ['plugin', '--profile', profile, 'remove', '@anionex/dsh-computer-use'], { env: { DSH_HOME: home } })
+      const remove = await run('dsh', ['plugin', '--profile', profile, 'remove', '@fffangchenghao/dsh-computer-use'], { env: { DSH_HOME: home } })
       expect(remove.code, remove.stderr).toBe(0)
       const dump = await run('dsh', ['--profile', profile, '--dump-config'], { env: { DSH_HOME: home } })
-      expect(dump.stdout).not.toContain('@anionex/dsh-computer-use')
+      expect(dump.stdout).not.toContain('@fffangchenghao/dsh-computer-use')
     }
 
     await access(tarball)

@@ -1,6 +1,9 @@
 # DSH Computer Use
 
-[![X (Twitter)](https://img.shields.io/badge/-@anion__ex-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/anion_ex)
+> Community-maintained fork of [Anionex/dsh-computer-use](https://github.com/Anionex/dsh-computer-use). The upstream project has been inactive since 2026-10-18, so this fork continues maintenance, ships the macOS Accessibility and coordinate fixes below, and publishes under `@fffangchenghao/dsh-computer-use`. Original code and documentation © anionex, MIT.
+
+[![npm](https://img.shields.io/npm/v/@fffangchenghao%2Fdsh-computer-use?style=flat-square)](https://www.npmjs.com/package/@fffangchenghao/dsh-computer-use)
+[![GitHub](https://img.shields.io/badge/github-fangchenghao%2Fdsh--computer--use-24292f?style=flat-square&logo=github)](https://github.com/fangchenghao/dsh-computer-use)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a.svg)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-14%2B-111827.svg)
 ![Universal binary](https://img.shields.io/badge/native-arm64%20%2B%20x86__64-2563eb.svg)
@@ -79,13 +82,15 @@ See [Foreground-safe input policy](docs/interaction-policy.md) for the requireme
 Install the Web and Headless bundles directly from npm:
 
 > [!IMPORTANT]
-> The published package name is `@anionex/dsh-computer-use`. The former
-> `@dsh-external/dsh-computer-use` name was never published to npm and is not
-> installable; update any old profile or manifest references before installing.
+> This fork publishes as `@fffangchenghao/dsh-computer-use`. The upstream package
+> `@anionex/dsh-computer-use` stops at 0.3.4 and declares support only through DSH
+> `0.2.1-rc.2`; installing this fork replaces that dependency. Remove the old
+> package from a profile before adding this one, and expect macOS to ask for
+> Accessibility and Screen Recording again because the helper path changes.
 
 ```sh
-dsh plugin --profile web add @anionex/dsh-computer-use
-dsh plugin --profile headless add @anionex/dsh-computer-use
+dsh plugin --profile web add @fffangchenghao/dsh-computer-use
+dsh plugin --profile headless add @fffangchenghao/dsh-computer-use
 
 dsh --profile web --dump-config | grep computer-use
 dsh --profile headless --dump-config | grep computer-use
@@ -275,7 +280,7 @@ Settings updates replace the active provider generation only after validation an
 - A target application may change its own activation or focus as a side effect of an accepted action.
 - The package captures requested discrete observations, not a live desktop feed.
 - Browser work should continue to use browser automation because DOM/CDP state is narrower and more precise.
-- The public npm package installs into both Web and Headless profiles as `@anionex/dsh-computer-use`.
+- The public npm package installs into both Web and Headless profiles as `@fffangchenghao/dsh-computer-use`.
 
 ## Development and release verification
 
@@ -310,8 +315,8 @@ pnpm run validate:release
 ## Removal
 
 ```sh
-dsh plugin --profile web remove @anionex/dsh-computer-use
-dsh plugin --profile headless remove @anionex/dsh-computer-use
+dsh plugin --profile web remove @fffangchenghao/dsh-computer-use
+dsh plugin --profile headless remove @fffangchenghao/dsh-computer-use
 ```
 
 Removing or disabling the Bundle unregisters the Skill and Tools, cancels helper work, releases process-local Agent observations, turn control grants, and confirmations, closes its storage-domain handle, and removes Web contributions. Existing screenshot files and the plugin-owned `computer_use_state` sidecar remain for explicit user cleanup.
@@ -327,8 +332,8 @@ Removing or disabling the Bundle unregisters the Skill and Tools, cancels helper
 
 ## About
 
-DSH Computer Use is maintained by [anionex](https://anionex.me/). If you would like to follow my future work, [follow me on X](https://x.com/anion_ex) or [GitHub](https://github.com/Anionex).
+DSH Computer Use was created by [anionex](https://github.com/Anionex). This fork is maintained by [fffangchenghao](https://github.com/fangchenghao); bug reports, compatibility updates, and release work happen in [fangchenghao/dsh-computer-use](https://github.com/fangchenghao/dsh-computer-use). Upstream attribution is kept in [LICENSE](LICENSE) and [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) © 2026 anionex.
+[MIT](LICENSE) © 2026 anionex and fffangchenghao.

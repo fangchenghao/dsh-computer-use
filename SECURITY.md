@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Security fixes target the latest commit on `main`. Version `0.1.x` is pre-stable; older commits do not receive a separate maintenance guarantee.
+Security fixes target the latest commit on `main` of <https://github.com/fangchenghao/dsh-computer-use>. Version `0.1.x` is pre-stable; older commits do not receive a separate maintenance guarantee.
 
 ## Reporting a vulnerability
 
 Do not open a public issue for a suspected vulnerability.
 
-Email `davidyang042@gmail.com` with the subject `dsh-computer-use security report`. Include the affected commit or version, impact, minimal reproduction, target application class, and any suggested mitigation. Do not send credentials, unrelated screenshots, secure-field contents, or customer data. Reports are handled privately while the issue is investigated and a fix or disclosure plan is prepared.
+Report it through GitHub's private vulnerability reporting: open <https://github.com/fangchenghao/dsh-computer-use/security/advisories/new>. Include the affected commit or version, impact, minimal reproduction, target application class, and any suggested mitigation. Do not send credentials, unrelated screenshots, secure-field contents, or customer data. Reports are handled privately while the issue is investigated and a fix or disclosure plan is prepared.
 
 ## Security-relevant behavior
 

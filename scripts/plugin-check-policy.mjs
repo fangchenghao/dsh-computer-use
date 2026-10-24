@@ -1,4 +1,4 @@
-const PACKAGE_NAME = '@anionex/dsh-computer-use'
+const PACKAGE_NAME = '@fffangchenghao/dsh-computer-use'
 const PACKAGE_ADVISORIES = new Set(['non-org-recommended-name', 'not-in-hub'])
 
 /** Enforce the aggregate gate while retaining the approved advisory details. */

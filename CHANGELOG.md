@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-24
+
+- Take over maintenance as a community fork. The package is now published as `@fffangchenghao/dsh-computer-use`, the repository metadata points at `fangchenghao/dsh-computer-use`, and the MIT copyright notice keeps the original `anionex` attribution. The upstream project has had no commits since 2026-10-18, so this fork carries the Accessibility, screenshot-coordinate, Chromium click, and DSH `0.2.1-rc.3` compatibility work forward.
+- 以社区分支形式接管维护。包名改为 `@fffangchenghao/dsh-computer-use`，仓库元信息指向 `fangchenghao/dsh-computer-use`，MIT 版权声明保留原作者 `anionex` 署名。上游自 2026-10-18 起没有新提交，因此本分支继续承载 Accessibility、截图像素坐标、Chromium 点击与 DSH `0.2.1-rc.3` 兼容性修复。
+- Migration: remove `@anionex/dsh-computer-use` from a profile before installing this package. The helper path changes, so macOS asks for Accessibility and Screen Recording again on first use. Profiles that granted a `compatibility.json` exemption for the old package can drop it.
+- 迁移：安装本包前先从 profile 移除 `@anionex/dsh-computer-use`。helper 路径变化，首次使用时 macOS 会重新请求 Accessibility 与 Screen Recording 权限；为旧包添加过 `compatibility.json` 豁免的 profile 可以删除该豁免。
+- 差异对比 / diff: <https://github.com/Anionex/dsh-computer-use/compare/dsh-v0.3.4...fangchenghao:main>
 
 - Support DSH `0.2.1-rc.3`: extend every DSH peer range and the declared compatibility matrix, and move the development baseline to `0.2.1-rc.3`. DSH rejects a plugin whose exact prerelease peers do not name the running release, so `0.2.1-rc.2` alone made the plugin show as incompatible and drop out of the profile after that update.
 - 支持 DSH `0.2.1-rc.3`：扩展全部 DSH peer 范围与兼容性声明，并把开发基线升级到 `0.2.1-rc.3`。DSH 要求精确的预发布 peer 必须包含当前运行的版本，只声明 `0.2.1-rc.2` 会让插件在升级后显示为不兼容并从 profile 中掉出。

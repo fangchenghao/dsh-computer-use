@@ -1,6 +1,9 @@
 # DSH Computer Use
 
-[![X (Twitter)](https://img.shields.io/badge/-@anion__ex-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/anion_ex)
+> 本项目是 [Anionex/dsh-computer-use](https://github.com/Anionex/dsh-computer-use) 的社区维护分支。上游自 2026-10-18 起没有新提交，因此本分支继续维护，包含下文所述的 macOS Accessibility 与坐标修复，并以 `@fffangchenghao/dsh-computer-use` 发布。原始代码与文档版权归 anionex，MIT 许可。
+
+[![npm](https://img.shields.io/npm/v/@fffangchenghao%2Fdsh-computer-use?style=flat-square)](https://www.npmjs.com/package/@fffangchenghao/dsh-computer-use)
+[![GitHub](https://img.shields.io/badge/github-fangchenghao%2Fdsh--computer--use-24292f?style=flat-square&logo=github)](https://github.com/fangchenghao/dsh-computer-use)
 [![MIT License](https://img.shields.io/badge/license-MIT-2f855a.svg)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-14%2B-111827.svg)
 ![Universal binary](https://img.shields.io/badge/native-arm64%20%2B%20x86__64-2563eb.svg)
@@ -79,13 +82,15 @@ Fixture 会记录每次 `applicationDidBecomeActive` 回调。独立 native moni
 直接从 npm 一键安装 Web 与 Headless Bundle：
 
 > [!IMPORTANT]
-> 已发布的包名为 `@anionex/dsh-computer-use`。旧名
-> `@dsh-external/dsh-computer-use` 从未发布到 npm，不可安装；
-> 安装前请先更新旧的 profile 或 manifest 引用。
+> 本分支以 `@fffangchenghao/dsh-computer-use` 发布。上游包
+> `@anionex/dsh-computer-use` 停在 0.3.4，且只声明支持到 DSH
+> `0.2.1-rc.2`；安装本分支会替换该依赖。请先从 profile 中移除旧包，
+> 再添加本包；由于 helper 路径变化，macOS 会重新请求 Accessibility
+> 与 Screen Recording 权限。
 
 ```sh
-dsh plugin --profile web add @anionex/dsh-computer-use
-dsh plugin --profile headless add @anionex/dsh-computer-use
+dsh plugin --profile web add @fffangchenghao/dsh-computer-use
+dsh plugin --profile headless add @fffangchenghao/dsh-computer-use
 
 dsh --profile web --dump-config | grep computer-use
 dsh --profile headless --dump-config | grep computer-use
@@ -275,7 +280,7 @@ Settings 更新只有在校验与健康检查通过后才替换当前 provider g
 - 目标应用可能因接受动作而自行改变 activation 或 focus。
 - 软件包按请求捕获离散 observation，不提供实时桌面流。
 - 浏览器工作应继续使用 browser automation，因为 DOM/CDP 状态更窄、更精确。
-- 公共 npm 包以 `@anionex/dsh-computer-use` 安装，可同时挂载到 Web 与 Headless Profile。
+- 公共 npm 包以 `@fffangchenghao/dsh-computer-use` 安装，可同时挂载到 Web 与 Headless Profile。
 
 ## 开发与发布验收
 
@@ -310,8 +315,8 @@ pnpm run validate:release
 ## 移除
 
 ```sh
-dsh plugin --profile web remove @anionex/dsh-computer-use
-dsh plugin --profile headless remove @anionex/dsh-computer-use
+dsh plugin --profile web remove @fffangchenghao/dsh-computer-use
+dsh plugin --profile headless remove @fffangchenghao/dsh-computer-use
 ```
 
 移除或禁用 Bundle 会注销 Skill 与 Tool、取消 helper 工作、释放进程内 Agent observation、turn control grant 与 confirmation、关闭 storage-domain handle，并移除 Web contribution。已经生成的截图文件和插件自有的 `computer_use_state` sidecar 会保留，供用户显式清理。
@@ -327,8 +332,8 @@ dsh plugin --profile headless remove @anionex/dsh-computer-use
 
 ## 关于
 
-DSH Computer Use 由 [anionex](https://anionex.me/) 维护。如果你想了解我后续的更多工作，欢迎在 [X](https://x.com/anion_ex) 或 [GitHub](https://github.com/Anionex) 关注我。
+DSH Computer Use 由 [anionex](https://github.com/Anionex) 创建。本分支由 [fffangchenghao](https://github.com/fangchenghao) 维护，问题反馈、兼容性更新与发布工作都在 [fangchenghao/dsh-computer-use](https://github.com/fangchenghao/dsh-computer-use) 进行。上游署名保留在 [LICENSE](LICENSE) 与 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 anionex。
+[MIT](LICENSE) © 2026 anionex 与 fffangchenghao。

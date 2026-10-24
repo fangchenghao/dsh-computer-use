@@ -1,6 +1,6 @@
 {
-  "name": "@anionex/dsh-computer-use",
-  "version": "0.3.4",
+  "name": "@fffangchenghao/dsh-computer-use",
+  "version": "0.4.0",
   "description": "Accessibility-first macOS Computer Use capability for DeepSeek Harness with stale-observation protection, app leases, confirmations, screenshots, and Web diagnostics",
   "keywords": [
     "deepseek",
@@ -12,10 +12,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Anionex/dsh-computer-use.git"
+    "url": "git+https://github.com/fangchenghao/dsh-computer-use.git"
   },
   "bugs": {
-    "url": "https://github.com/Anionex/dsh-computer-use/issues"
+    "url": "https://github.com/fangchenghao/dsh-computer-use/issues"
   },
   "type": "module",
   "packageManager": "pnpm@11.20.0",

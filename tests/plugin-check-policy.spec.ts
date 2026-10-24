@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { assertPluginCheckReport } from '../scripts/plugin-check-policy.mjs'
 
-const packageName = '@anionex/dsh-computer-use'
+const packageName = '@fffangchenghao/dsh-computer-use'
 const nameWarning = { code: 'non-org-recommended-name', detail: 'Existing personal npm namespace.' }
 const hubWarning = { code: 'not-in-hub', detail: 'Repository is absent from the public catalog.' }
 
@@ -41,9 +41,9 @@ describe('plugin checker aggregate policy', () => {
 
   it.each([
     '@other/dsh-computer-use',
-    '@anionex/dsh-computer-use-next',
+    '@fffangchenghao/dsh-computer-use-next',
     '@Anionex/dsh-computer-use',
-    ' @anionex/dsh-computer-use ',
+    ' @fffangchenghao/dsh-computer-use ',
     undefined,
     null,
   ])('does not extend the approved advisories to package %j', otherPackage => {

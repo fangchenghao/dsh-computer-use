@@ -2,7 +2,7 @@
 # the model-facing Skill and Agent-scoped Tools.
 - insert:
     - id: computer-use
-      name: '@anionex/dsh-computer-use'
+      name: '@fffangchenghao/dsh-computer-use'
       config:
         observationTtlMs: 0
         interaction:

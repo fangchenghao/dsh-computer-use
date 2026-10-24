@@ -1,21 +1,19 @@
 # Funding
 
-DSH Computer Use is available under the MIT License. If it saves time in a native-Agent workflow, you can support continued maintenance through [Afdian](https://ifdian.net/a/anionex).
+DSH Computer Use is a community fork maintained on a best-effort basis under the MIT License. This fork has no funding, sponsorship, or donation channel. The upstream Afdian page and sponsorship mailbox mentioned in earlier releases belong to the original author and no longer apply here.
 
-For one-time or organization sponsorship, email `davidyang042@gmail.com` with the subject `dsh-computer-use sponsorship`.
+The most useful support is:
 
-Funding supports:
-
-- compatibility work across DeepSeek Harness, macOS Accessibility, AppKit, TCC behavior, and Xcode toolchains;
-- universal helper builds, deterministic fixture coverage, clean Profile validation, and real-model release checks;
-- security fixes, documentation, issue triage, and maintenance of the public package surface.
-
-Financial support does not purchase roadmap control, private support, security exceptions, expanded application access, or priority over public correctness and safety requirements.
+- a reproducible bug report using the deterministic fixture and the issue templates;
+- a pull request that keeps the native helper, manifest, docs, and tests synchronized;
+- a clear report of a DeepSeek Harness version change that breaks the plugin, including the exact DSH version and the error text.
 
 ## 赞助
 
-DSH Computer Use 采用 MIT License。如果它为你的原生 Agent 工作流节省了时间，可以通过[爱发电](https://ifdian.net/a/anionex)支持持续维护。
+DSH Computer Use 是以 MIT License 发布的社区维护分支，按尽力而为的方式维护。本分支目前没有赞助或捐赠渠道；旧版本中提到的爱发电页面与赞助邮箱属于原作者，不再适用于本分支。
 
-一次性或组织赞助可发送邮件至 `davidyang042@gmail.com`，主题写为 `dsh-computer-use sponsorship`。
+最有用的支持方式是：
 
-赞助主要用于 DeepSeek Harness、macOS Accessibility、AppKit、TCC 与 Xcode 兼容，universal helper、确定性 fixture、Profile 与真实模型验收、安全修复、文档和 issue 维护。赞助不购买 roadmap 控制权、私有支持、安全例外、扩大应用访问范围或高于公开正确性要求的优先级。
+- 使用确定性 fixture 和 issue 模板提交可复现的 bug；
+- 提交保持 native helper、manifest、文档与测试同步的 pull request；
+- 报告导致插件失效的 DeepSeek Harness 版本变化，并附上确切的 DSH 版本与错误信息。
