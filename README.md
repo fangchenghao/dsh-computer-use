@@ -85,8 +85,10 @@ Install the Web and Headless bundles directly from npm:
 > This fork publishes as `@fffangchenghao/dsh-computer-use`. The upstream package
 > `@anionex/dsh-computer-use` stops at 0.3.4 and declares support only through DSH
 > `0.2.1-rc.2`; installing this fork replaces that dependency. Remove the old
-> package from a profile before adding this one, and expect macOS to ask for
-> Accessibility and Screen Recording again because the helper path changes.
+> package from a profile before adding this one. macOS normally keeps the
+> existing Accessibility and Screen Recording grants because it attributes them
+> to DeepSeek Harness, the responsible process; if a prompt does appear, grant it
+> to the new helper once.
 
 ```sh
 dsh plugin --profile web add @fffangchenghao/dsh-computer-use

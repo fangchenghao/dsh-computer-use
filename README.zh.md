@@ -85,8 +85,9 @@ Fixture 会记录每次 `applicationDidBecomeActive` 回调。独立 native moni
 > 本分支以 `@fffangchenghao/dsh-computer-use` 发布。上游包
 > `@anionex/dsh-computer-use` 停在 0.3.4，且只声明支持到 DSH
 > `0.2.1-rc.2`；安装本分支会替换该依赖。请先从 profile 中移除旧包，
-> 再添加本包；由于 helper 路径变化，macOS 会重新请求 Accessibility
-> 与 Screen Recording 权限。
+> 再添加本包。macOS 通常会把已有的 Accessibility 与 Screen Recording
+> 授权保留下来，因为它把权限归属到负责进程 DeepSeek Harness；如果确实弹出
+> 授权提示，给新 helper 授权一次即可。
 
 ```sh
 dsh plugin --profile web add @fffangchenghao/dsh-computer-use
