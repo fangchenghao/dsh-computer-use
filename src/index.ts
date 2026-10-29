@@ -19,7 +19,7 @@ export * from './service.ts'
 export * from './types.ts'
 
 /** Register the portable Skill, bootstrap, Agent-scoped Tools, and optional Web diagnostics. */
-export function installComputerUseConsumer(ctx: Context): () => void {
+export function installComputerUseConsumer(ctx: Context, update?: ComputerUseUpdateControl): () => void {
   const exposure = new ComputerUseExposure(ctx, () => createComputerUseTools(ctx.computerUse))
   let activation: (() => void) | undefined
   let skill: (() => void) | undefined
@@ -30,7 +30,7 @@ export function installComputerUseConsumer(ctx: Context): () => void {
     skill = ctx.skills.register(COMPUTER_USE_SKILL)
     legacySkill = ctx.skills.register(LEGACY_COMPUTER_USE_SKILL)
     exposureDispose = exposure.install()
-    installComputerUseWeb(ctx)
+    installComputerUseWeb(ctx, update)
   } catch (error) {
     exposureDispose?.()
     legacySkill?.()
@@ -75,7 +75,7 @@ export class ComputerUseBundle extends MacOSComputerUseProvider {
       installComputerUseWeb(this.ctx, this.updateControl)
       return
     }
-    this.consumerDispose = installComputerUseConsumer(this.ctx)
+    this.consumerDispose = installComputerUseConsumer(this.ctx, this.updateControl)
   }
 
   /**

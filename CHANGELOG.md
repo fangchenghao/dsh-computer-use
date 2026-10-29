@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 — 2026-10-29
+
+- Pass the update control into the macOS Settings route, so the "Version and updates" panel and the manual check/update buttons appear on macOS instead of only on unsupported platforms.
+- 把更新控制器传入 macOS 的设置路由，使「版本与更新」面板与手动检查/更新按钮在 macOS 上也能显示，而不是只出现在不支持的平台上。
+- Rebuild the universal helper as 0.4.4.
+- 重新构建 universal helper 为 0.4.4。
+
 ## 0.4.3 — 2026-10-29
 
 - Check the registry on every DSH start and keep checking every `updateIntervalHours` while the host stays open, instead of skipping starts inside a 24-hour window. A fresh patch release now applies on the first restart.
