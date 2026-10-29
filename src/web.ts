@@ -10,6 +10,7 @@ import {
   type ComputerUseConfig,
 } from './config.ts'
 import type { ComputerUseStatus } from './types.ts'
+import type { UpdateStatus } from './update.ts'
 
 /** Exact same-origin Settings endpoint. */
 export const COMPUTER_USE_SETTINGS_ROUTE = '/_dsh/computer-use/settings'
@@ -26,12 +27,15 @@ export interface ComputerUseSettingsSnapshot {
     applies: 'live'
   }
   provider: ComputerUseStatus
+  update?: UpdateStatus
 }
 
 type SettingsRequest =
   | { action: 'save'; expectedRevision: number; value: ComputerUseConfig }
   | { action: 'health' }
   | { action: 'open-settings'; kind: 'accessibility' | 'screen-recording' }
+  | { action: 'check-update' }
+  | { action: 'apply-update' }
 
 type JsonResponse<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
 
@@ -98,6 +102,8 @@ async function readJson(req: IncomingMessage, maxBytes = 128 * 1024): Promise<un
 function parseRequest(value: unknown): SettingsRequest {
   if (!isRecord(value) || typeof value.action !== 'string') throw new TypeError('request needs an action')
   if (value.action === 'health') return { action: 'health' }
+  if (value.action === 'check-update') return { action: 'check-update' }
+  if (value.action === 'apply-update') return { action: 'apply-update' }
   if (value.action === 'open-settings') {
     if (value.kind !== 'accessibility' && value.kind !== 'screen-recording') throw new TypeError('open-settings needs a valid kind')
     return { action: 'open-settings', kind: value.kind }
@@ -129,10 +135,17 @@ function isSettingsConflict(error: unknown): boolean {
 }
 
 /** Same-origin backend used by the optional client Settings section. */
+export interface ComputerUseUpdateControl {
+  status(): UpdateStatus
+  check(): Promise<UpdateStatus>
+  apply(): Promise<UpdateStatus>
+}
+
 export class ComputerUseWebBackend {
   constructor(
     private readonly ctx: Context,
     private readonly authorizeUnmarkedPost?: (req: IncomingMessage) => boolean,
+    private readonly update?: ComputerUseUpdateControl,
   ) {}
 
   /** Current browser-safe Settings and health state. */
@@ -149,6 +162,7 @@ export class ComputerUseWebBackend {
         applies: 'live',
       },
       provider: this.ctx.computerUse.status(),
+      ...(this.update === undefined ? {} : { update: this.update.status() }),
     }
   }
 
@@ -181,6 +195,12 @@ export class ComputerUseWebBackend {
         await this.ctx.settings.replace(COMPUTER_USE_SETTINGS_NAMESPACE, parsed.value as object, parsed.expectedRevision)
       } else if (parsed.action === 'health') {
         await this.ctx.computerUse.health(AbortSignal.timeout(30000))
+      } else if (parsed.action === 'check-update') {
+        if (this.update === undefined) throw new Error('the updater is unavailable in this deployment')
+        await this.update.check()
+      } else if (parsed.action === 'apply-update') {
+        if (this.update === undefined) throw new Error('the updater is unavailable in this deployment')
+        await this.update.apply()
       } else {
         await this.ctx.computerUse.openPermissionSettings(parsed.kind, AbortSignal.timeout(10000))
       }
@@ -194,13 +214,13 @@ export class ComputerUseWebBackend {
 }
 
 /** Attach the optional route when a Web host is present. */
-export function installComputerUseWeb(ctx: Context): void {
+export function installComputerUseWeb(ctx: Context, update?: ComputerUseUpdateControl): void {
   ctx.inject(['webServer', 'connection'], (webCtx) => {
     const connection = (webCtx as Context & {
       connection?: { requestRejection?: (req: IncomingMessage) => 401 | 403 | undefined }
     }).connection
     const backend = new ComputerUseWebBackend(webCtx, (req) =>
-      typeof connection?.requestRejection === 'function' && connection.requestRejection(req) === undefined)
+      typeof connection?.requestRejection === 'function' && connection.requestRejection(req) === undefined, update)
     webCtx.effect(() => webCtx.webServer.register({
       kind: 'exact',
       path: COMPUTER_USE_SETTINGS_ROUTE,

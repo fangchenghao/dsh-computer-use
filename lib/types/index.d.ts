@@ -13,9 +13,16 @@ export declare class ComputerUseBundle extends MacOSComputerUseProvider {
     static inject: string[];
     static Config: import("@deepseek-ai/schemastery").default<ComputerUseConfig>;
     private consumerDispose;
+    private updateControl;
+    private readonly updateSettings;
     constructor(ctx: Context, config?: ComputerUseConfig);
     /** Publish model-facing capabilities only after provider integrity and health pass. */
     protected [Service.init](): Promise<void>;
+    /**
+     * Follow the published package: check the registry shortly after startup and
+     * install newer patch releases into the profile that owns this module.
+     */
+    private startUpdater;
 }
 export default ComputerUseBundle;
 //# sourceMappingURL=index.d.ts.map

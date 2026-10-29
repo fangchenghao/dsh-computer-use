@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-10-29
+
+- Update the Bundle the way DSH installs it: about five seconds after startup the plugin asks the registry for the published version, and when it is a newer patch of the installed line it runs the profile's own pnpm (`add @fffangchenghao/dsh-computer-use@<version>`) in the owning profile, then reports that a restart is required. `package.json` and `pnpm-lock.yaml` are backed up first and restored if the install fails; a failed version is not retried for six hours.
+- 按 DSH 安装插件的方式更新自己：启动约五秒后向 npm registry 查询已发布版本；如果它是当前版本线的新补丁版本，就用 profile 自己的 pnpm 在拥有本模块的 profile 中执行 `add @fffangchenghao/dsh-computer-use@<版本>`，然后提示需要重启。安装前备份 `package.json` 与 `pnpm-lock.yaml`，失败时自动还原；失败的版本六小时内不会重试。
+- Add a "Version and updates" section to the Settings page with installed/latest versions, a manual check, a one-click update, a restart notice, and the `autoUpdate` toggle. New `autoUpdate` (default `true`) and `updateIntervalHours` (default `24`) configuration fields gate the background check.
+- 设置页新增「版本与更新」：显示已安装/最新版本、手动检查、一键更新、重启提示与 `autoUpdate` 开关。新增 `autoUpdate`（默认 `true`）与 `updateIntervalHours`（默认 `24`）配置项控制后台检查。
+- Only patch releases are installed unattended. Minor and major releases are reported in Settings and always need a manual update, because they may change the DSH peer range or model-facing behavior.
+- 只有补丁版本会自动安装。次版本与主版本只在设置页提示，必须手动更新，因为它们可能改变 DSH peer 范围或模型可见行为。
+- Rebuild the universal helper as 0.4.1 so the packaged binary, manifest hash, and package version stay synchronized.
+- 重新构建 universal helper 为 0.4.1，使打包二进制、manifest 哈希与包版本保持一致。
+
 ## 0.4.0 — 2026-10-24
 
 - Take over maintenance as a community fork. The package is now published as `@fffangchenghao/dsh-computer-use`, the repository metadata points at `fangchenghao/dsh-computer-use`, and the MIT copyright notice keeps the original `anionex` attribution. The upstream project has had no commits since 2026-10-18, so this fork carries the Accessibility, screenshot-coordinate, Chromium click, and DSH `0.2.1-rc.3` compatibility work forward.

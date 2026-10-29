@@ -59,6 +59,10 @@ export interface ComputerUseConfig {
   interaction?: ComputerUseInteractionConfig
   allowAllApps?: boolean
   grants?: ComputerUseAppGrant[]
+  /** Check the npm registry shortly after startup and install newer patch releases. */
+  autoUpdate?: boolean
+  /** Hours between background update checks (1-168). */
+  updateIntervalHours?: number
 }
 
 /** DSH 0.1.7 derives editable Settings fields from volatile Config fields.
@@ -110,6 +114,8 @@ export const Config: Schema<ComputerUseConfig> = z.object({
     cursorAutoHideMs: z.number().default(0),
   })),
   allowAllApps: live(z.boolean().default(false)),
+  autoUpdate: live(z.boolean().default(true)),
+  updateIntervalHours: live(z.number().default(24)),
   grants: live(z.array(z.object({
     bundleId: z.string(),
     read: z.boolean().default(false),
@@ -144,6 +150,8 @@ export interface ResolvedComputerUseConfig {
     cursorAutoHideMs: number
   }
   allowAllApps: boolean
+  autoUpdate: boolean
+  updateIntervalHours: number
   grants: Array<{
     bundleId: string
     read: boolean
@@ -197,6 +205,8 @@ export function resolveConfig(config: ComputerUseConfig = {}): ResolvedComputerU
   const cursorClickDelayMs = integer('interaction.cursorClickDelayMs', config.interaction?.cursorClickDelayMs ?? 90, 0, 1000)
   const cursorAutoHideMs = integer('interaction.cursorAutoHideMs', config.interaction?.cursorAutoHideMs ?? 0, 0, 30000)
   const allowAllApps = config.allowAllApps ?? false
+  const autoUpdate = config.autoUpdate ?? true
+  const updateIntervalHours = integer('updateIntervalHours', config.updateIntervalHours ?? 24, 1, 168)
   const seen = new Set<string>()
   const grants = (config.grants ?? []).map((grant) => {
     const bundleId = grant.bundleId.trim()
@@ -236,6 +246,8 @@ export function resolveConfig(config: ComputerUseConfig = {}): ResolvedComputerU
       cursorAutoHideMs,
     },
     allowAllApps,
+    autoUpdate,
+    updateIntervalHours,
     grants,
   }
 }

@@ -51,6 +51,10 @@ export interface ComputerUseConfig {
     interaction?: ComputerUseInteractionConfig;
     allowAllApps?: boolean;
     grants?: ComputerUseAppGrant[];
+    /** Check the npm registry shortly after startup and install newer patch releases. */
+    autoUpdate?: boolean;
+    /** Hours between background update checks (1-168). */
+    updateIntervalHours?: number;
 }
 /** Read the newer Loader's stable references without changing the legacy shape. */
 export declare function readComputerUseConfig(config: ComputerUseConfig): ComputerUseConfig;
@@ -83,6 +87,8 @@ export interface ResolvedComputerUseConfig {
         cursorAutoHideMs: number;
     };
     allowAllApps: boolean;
+    autoUpdate: boolean;
+    updateIntervalHours: number;
     grants: Array<{
         bundleId: string;
         read: boolean;

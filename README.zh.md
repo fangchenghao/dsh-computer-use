@@ -260,6 +260,8 @@ Accessibility 与 Screen Recording 是 UI 权限，不是文件系统权限。�
 | `interaction.cursorAccelerationPxPerSecondSquared` | Agent 光标加速度与减速度；默认 `6000`，范围为每秒平方 `100` 至 `500000` 像素 |
 | `interaction.cursorClickDelayMs` | 到达后、点击/拖拽按下反馈与原生输入前的停顿；默认 `90`，范围 `0` 至 `1000` 毫秒 |
 | `interaction.cursorAutoHideMs` | Agent 光标空闲后隐藏时间；默认 `0` 表示在目标保持前台且绑定有效时持续显示，也可设为最大 `30000` ms 内的有限值 |
+| `autoUpdate` | 启动后检查 npm 仓库并自动安装新的补丁版本；默认 `true` |
+| `updateIntervalHours` | 两次后台检查之间的最小间隔小时数，`1` 到 `168`；默认 `24` |
 | `allowAllApps` | 向所有运行中的应用授予 `read` 与 `control`；默认 `false`。开启后忽略精确 `grants` |
 | `grants` | 准确、无通配符的 bundle-id read/control policy；`control: true` 隐含 read |
 
@@ -269,9 +271,15 @@ Accessibility 与 Screen Recording 是 UI 权限，不是文件系统权限。�
 
 Settings 更新只有在校验与健康检查通过后才替换当前 provider generation；替换会使已有 observation 与待用 confirmation 失效。
 
+## 自动更新
+
+Bundle 会在启动约五秒后检查 `registry.npmjs.org`，两次后台检查至少间隔 `updateIntervalHours`，并把结果显示在设置页。如果发布的是当前版本线的新补丁版本（例如 `0.4.0` 到 `0.4.1`），它会用 DSH 桌面宿主启动时的同一个 pnpm 把该版本安装到拥有本模块的 profile，并提示需要重启；新代码会在下次重启后生效。
+
+只有补丁版本会自动安装。更高的次版本或主版本只会在设置页提示，必须手动更新，因为这些版本可能改变 DSH peer 范围或模型可见行为。安装前会备份 `package.json` 与 `pnpm-lock.yaml`，包管理器失败时自动还原；失败的版本六小时内不会重试。可用 `autoUpdate: false` 或设置页开关关闭后台检查。
+
 ## 状态与限制
 
-- 状态：早期 `0.3.0`；稳定版本发布前，模型可见和 provider 行为仍可能变化。
+- 状态：早期 `0.4.1`；稳定版本发布前，模型可见和 provider 行为仍可能变化。
 - 当前 provider 只支持 macOS；Windows UI Automation 和 Linux provider 尚未实现。
 - 在非 macOS 主机上插件会优雅降级：DSH profile 正常启动，不会注册 Computer Use 工具与 Skill，Web Settings 会显示 `COMPUTER_UNSUPPORTED_PLATFORM`，而不是让启动失败。
 - 目标进程指针投递使用动态解析的 SkyLight SPI。该路由不可用时，pointer fallback 会 fail closed，不会切换到全局输入。

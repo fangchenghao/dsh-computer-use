@@ -94,6 +94,19 @@ const en = {
   loading: 'Loading Computer Use settings...',
   retry: 'Retry',
   numberRange: '{field} must be an integer from {min} to {max}.',
+  version: 'Version and updates',
+  versionHint: 'Checks the npm registry in the background and installs newer patch releases into this profile.',
+  currentVersion: 'Installed',
+  latestVersion: 'Latest',
+  checkUpdate: 'Check for updates',
+  updateNow: 'Update now',
+  updating: 'Updating...',
+  upToDate: 'Up to date',
+  updateAvailable: 'A newer version is available',
+  updateReady: 'Updated to {version}; restart DeepSeek Harness to load it.',
+  updateFailed: 'Update check failed',
+  autoUpdateLabel: 'Install newer patch releases automatically',
+  autoUpdateHint: 'Minor and major releases always require a manual update.',
 } as const
 
 type LocaleKey = keyof typeof en
@@ -162,6 +175,19 @@ const zh: Record<LocaleKey, string> = {
   loading: '正在加载电脑操作设置...',
   retry: '重试',
   numberRange: '{field}必须是 {min} 到 {max} 之间的整数。',
+  version: '版本与更新',
+  versionHint: '后台检查 npm 仓库，并把新的补丁版本自动安装到当前 profile。',
+  currentVersion: '当前版本',
+  latestVersion: '最新版本',
+  checkUpdate: '检查更新',
+  updateNow: '立即更新',
+  updating: '正在更新...',
+  upToDate: '已是最新版本',
+  updateAvailable: '有新版本可用',
+  updateReady: '已更新到 {version}，重启 DeepSeek Harness 后生效。',
+  updateFailed: '更新检查失败',
+  autoUpdateLabel: '自动安装新的补丁版本',
+  autoUpdateHint: '次版本与主版本始终需要手动更新。',
 }
 
 type Translate = (key: LocaleKey, params?: Record<string, string | number>) => string
@@ -190,6 +216,7 @@ interface ConfigValue {
     cursorAutoHideMs?: number
   }
   allowAllApps?: boolean
+  autoUpdate?: boolean
   grants?: Array<{ bundleId: string; read?: boolean; control?: boolean }>
 }
 
@@ -209,11 +236,21 @@ interface Snapshot {
     screenRecording: string
     lastError?: string
   }
+  update?: {
+    current: string
+    latest?: string
+    available: boolean
+    checkedAt?: string
+    installing: boolean
+    updatedTo?: string
+    restartRequired: boolean
+    error?: string
+  }
 }
 
 interface ControllerState {
   status: 'idle' | 'loading' | 'ready' | 'error'
-  action?: 'save' | 'health' | 'open'
+  action?: 'save' | 'health' | 'open' | 'check-update' | 'apply-update'
   snapshot?: Snapshot
   error?: string
   notice?: string
@@ -256,7 +293,7 @@ class ComputerUseSettingsController {
   }
 
   async action(
-    action: 'save' | 'health' | 'open-settings',
+    action: 'save' | 'health' | 'open-settings' | 'check-update' | 'apply-update',
     payload: Record<string, unknown>,
     marker: NonNullable<ControllerState['action']>,
   ): Promise<void> {
@@ -315,6 +352,7 @@ interface Draft {
   cursorClickDelayMs: string
   cursorAutoHideMs: string
   allowAllApps: boolean
+  autoUpdate: boolean
   grants: string
 }
 
@@ -341,6 +379,7 @@ function draftOf(value: ConfigValue): Draft {
     cursorClickDelayMs: String(value.interaction?.cursorClickDelayMs ?? 90),
     cursorAutoHideMs: String(value.interaction?.cursorAutoHideMs ?? 0),
     allowAllApps: value.allowAllApps ?? false,
+    autoUpdate: value.autoUpdate ?? true,
     grants: (value.grants ?? []).map(grant => `${grant.bundleId} ${grant.control === true ? 'read,control' : 'read'}`).join('\n'),
   }
 }
@@ -386,6 +425,7 @@ function configOf(draft: Draft, t: Translate): ConfigValue {
       cursorAutoHideMs: integerInRange(draft.cursorAutoHideMs, t('cursorAutoHide'), 0, 30000, rangeError),
     },
     allowAllApps: draft.allowAllApps,
+    autoUpdate: draft.autoUpdate,
     grants,
   }
 }
@@ -450,6 +490,32 @@ function LoadedSettings({ controller, t }: { controller: ComputerUseSettingsCont
         <PermissionCard label={t('accessibility')} state={snapshot.provider.accessibility} kind="accessibility" controller={controller} t={t} />
         <PermissionCard label={t('screenRecording')} state={snapshot.provider.screenRecording} kind="screen-recording" controller={controller} t={t} />
       </div>
+    </section>
+    <section className="dcu-panel">
+      <div className="dcu-panel-title">
+        <div><h3>{t('version')}</h3><p>{t('versionHint')}</p></div>
+        <Button variant="outline" disabled={state.action !== undefined} onClick={() => { void controller.action('check-update', {}, 'check-update') }}>
+          {state.action === 'check-update' ? t('updating') : t('checkUpdate')}
+        </Button>
+      </div>
+      <div className="dcu-grid">
+        <Field label={t('currentVersion')}><code className="dcu-path">{snapshot.update?.updatedTo ?? snapshot.update?.current ?? '—'}</code></Field>
+        <Field label={t('latestVersion')}><code className="dcu-path">{snapshot.update?.latest ?? '—'}</code></Field>
+      </div>
+      {snapshot.update?.error === undefined ? null : <div className="dcu-alert error">{t('updateFailed')}: {snapshot.update.error}</div>}
+      {snapshot.update?.restartRequired === true ? <div className="dcu-alert ok">{t('updateReady', { version: snapshot.update.updatedTo ?? '' })}</div> : null}
+      {snapshot.update?.available === true && snapshot.update.restartRequired !== true
+        ? <div className="dcu-alert warning">
+          <span>{t('updateAvailable')}{snapshot.update.latest === undefined ? '' : ` (${snapshot.update.latest})`}</span>
+          <Button variant="outline" disabled={state.action !== undefined} onClick={() => { void controller.action('apply-update', {}, 'apply-update') }}>
+            {state.action === 'apply-update' ? t('updating') : t('updateNow')}
+          </Button>
+        </div>
+        : null}
+      {snapshot.update?.available === false && snapshot.update.restartRequired !== true && snapshot.update.error === undefined
+        ? <div className="dcu-alert ok">{t('upToDate')}</div>
+        : null}
+      <label className="dcu-check"><input type="checkbox" checked={draft.autoUpdate} onChange={event => update('autoUpdate', event.target.checked)} /><span><strong>{t('autoUpdateLabel')}</strong><small>{t('autoUpdateHint')}</small></span></label>
     </section>
     <section className="dcu-panel dcu-essential">
       <div className="dcu-panel-title"><div><h3>{t('access')}</h3><p>{t('accessHint')}</p></div></div>

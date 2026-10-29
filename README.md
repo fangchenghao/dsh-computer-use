@@ -261,6 +261,8 @@ The committed helper is an ad-hoc-signed universal `arm64` + `x86_64` binary tar
 | `interaction.cursorAccelerationPxPerSecondSquared` | Agent-cursor acceleration and deceleration; default `6000`, range `100` to `500000` pixels per second squared |
 | `interaction.cursorClickDelayMs` | Dwell after arrival and before click/drag press feedback and native input; default `90`, range `0` to `1000` ms |
 | `interaction.cursorAutoHideMs` | Idle time before the Agent cursor hides; default `0` keeps it visible while the target remains frontmost and bound, or set a finite value up to `30000` ms |
+| `autoUpdate` | Check the registry after startup and install newer patch releases automatically; default `true` |
+| `updateIntervalHours` | Minimum hours between background checks, `1` to `168`; default `24` |
 | `allowAllApps` | Grant `read` and `control` to every running app; default `false`. When enabled, exact `grants` are ignored |
 | `grants` | Exact non-wildcard bundle-id read/control policy; `control: true` implies read |
 
@@ -270,9 +272,15 @@ The deprecated 0.2.x `interaction.cursorMotionMs` field remains accepted so exis
 
 Settings updates replace the active provider generation only after validation and health checks pass. Replacement invalidates existing observations and pending confirmations.
 
+## Automatic updates
+
+The Bundle checks `registry.npmjs.org` about five seconds after startup, at most once every `updateIntervalHours`, and records the result in Settings. When the published release is a newer patch of the installed line (`0.4.0` to `0.4.1`), it installs that release into the profile that owns the module with the same pnpm the DSH desktop host was started with, then reports that a restart is required. The new code loads on the next restart.
+
+Only patch releases are installed unattended. A newer minor or major release is reported but always needs a manual update, because those releases can change the DSH peer range or model-facing behavior. Before installing, the updater backs up `package.json` and `pnpm-lock.yaml` and restores them if the package manager fails; a failed version is not retried for six hours. Disable the background check with `autoUpdate: false` or the Settings toggle.
+
 ## Status and limitations
 
-- Status: early `0.3.0`; model-facing and provider behavior may change before a stable release.
+- Status: early `0.4.1`; model-facing and provider behavior may change before a stable release.
 - The current provider is macOS-only. Windows UI Automation and Linux providers are not implemented.
 - On non-macOS hosts the plugin degrades gracefully: the DSH profile starts normally, Computer Use Tools and the Skill are not registered, and Web Settings reports `COMPUTER_UNSUPPORTED_PLATFORM` instead of failing startup.
 - Target-process pointer delivery uses dynamically resolved SkyLight SPI. If it is unavailable, pointer fallback fails closed rather than switching to global input.

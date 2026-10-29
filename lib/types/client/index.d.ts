@@ -67,6 +67,19 @@ declare const en: {
     readonly loading: "Loading Computer Use settings...";
     readonly retry: "Retry";
     readonly numberRange: "{field} must be an integer from {min} to {max}.";
+    readonly version: "Version and updates";
+    readonly versionHint: "Checks the npm registry in the background and installs newer patch releases into this profile.";
+    readonly currentVersion: "Installed";
+    readonly latestVersion: "Latest";
+    readonly checkUpdate: "Check for updates";
+    readonly updateNow: "Update now";
+    readonly updating: "Updating...";
+    readonly upToDate: "Up to date";
+    readonly updateAvailable: "A newer version is available";
+    readonly updateReady: "Updated to {version}; restart DeepSeek Harness to load it.";
+    readonly updateFailed: "Update check failed";
+    readonly autoUpdateLabel: "Install newer patch releases automatically";
+    readonly autoUpdateHint: "Minor and major releases always require a manual update.";
 };
 type LocaleKey = keyof typeof en;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
