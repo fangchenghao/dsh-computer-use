@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.3 — 2026-10-29
+
+- Check the registry on every DSH start and keep checking every `updateIntervalHours` while the host stays open, instead of skipping starts inside a 24-hour window. A fresh patch release now applies on the first restart.
+- 每次启动 DSH 都检查 registry，并在宿主保持打开时每隔 `updateIntervalHours` 继续检查；不再因为 24 小时窗口而跳过启动检查。新补丁版本会在第一次重启时生效。
+- Rebuild the universal helper as 0.4.3.
+- 重新构建 universal helper 为 0.4.3。
+
 ## 0.4.2 — 2026-10-29
 
 - Retry the automatic install when pnpm refuses a release that is still inside its `minimumReleaseAge` supply-chain window. The retry passes `--config.minimumReleaseAge=0` for that one install only, so a Bundle patch release normally applies on the first check. Exact-version updates stay limited to this package and to patch releases.

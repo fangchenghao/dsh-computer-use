@@ -187,6 +187,7 @@ export class ComputerUseUpdater {
   private readonly statePath: string
   private state: UpdateStatus
   private timer: NodeJS.Timeout | undefined
+  private intervalTimer: NodeJS.Timeout | undefined
   private running = false
 
   constructor(options: UpdateOptions) {
@@ -218,12 +219,19 @@ export class ComputerUseUpdater {
       void this.runScheduledCheck()
     }, 5_000)
     this.timer.unref?.()
+    const interval = (this.options.intervalHours ?? 24) * 60 * 60 * 1000
+    this.intervalTimer = setInterval(() => {
+      void this.runScheduledCheck()
+    }, interval)
+    this.intervalTimer.unref?.()
   }
 
   /** Stop the background timer. */
   dispose(): void {
     if (this.timer !== undefined) clearTimeout(this.timer)
+    if (this.intervalTimer !== undefined) clearInterval(this.intervalTimer)
     this.timer = undefined
+    this.intervalTimer = undefined
   }
 
   /** Read the newest published version without changing the installation. */
@@ -333,12 +341,6 @@ export class ComputerUseUpdater {
   }
 
   private async runScheduledCheck(): Promise<void> {
-    const previous = await this.readState()
-    const interval = (this.options.intervalHours ?? 24) * 60 * 60 * 1000
-    if (previous.checkedAt !== undefined && this.now() - previous.checkedAt < interval) {
-      this.log('info', `skipping the scheduled check; the last one was ${Math.round((this.now() - previous.checkedAt) / 60_000)} minutes ago`)
-      return
-    }
     const status = await this.check()
     if (!status.available || status.latest === undefined) return
     const state = await this.readState()

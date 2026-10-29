@@ -70,6 +70,7 @@ export declare class ComputerUseUpdater {
     private readonly statePath;
     private state;
     private timer;
+    private intervalTimer;
     private running;
     constructor(options: UpdateOptions);
     /** Current update state, safe to serialize into the Settings snapshot. */
