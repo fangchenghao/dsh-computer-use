@@ -1,6 +1,6 @@
 {
   "name": "@fffangchenghao/dsh-computer-use",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Accessibility-first macOS Computer Use capability for DeepSeek Harness with stale-observation protection, app leases, confirmations, screenshots, and Web diagnostics",
   "keywords": [
     "deepseek",

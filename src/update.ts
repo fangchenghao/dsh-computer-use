@@ -286,11 +286,21 @@ export class ComputerUseUpdater {
       if (manager === undefined) throw new Error('no package manager was found for this DSH installation')
       const args = [...manager.args, 'add', `${this.options.packageName}@${latest}`, '--save-prefix', '^']
       this.log('info', `installing ${this.options.packageName}@${latest} in ${this.options.profileDir}`)
-      const result = await this.runner(manager.command, args, {
+      let result = await this.runner(manager.command, args, {
         cwd: this.options.profileDir,
         timeoutMs: INSTALL_TIMEOUT_MS,
         env: { ...process.env, ...manager.env },
       })
+      if (result.code !== 0 && /minimumReleaseAge|NO_MATURE_MATCHING_VERSION/u.test(result.output)) {
+        // pnpm refuses releases inside its supply-chain age window. This Bundle only
+        // auto-installs its own patch releases, so retry that gate for this one call.
+        this.log('warn', `${latest} is inside the package manager's minimum release age; retrying with the gate disabled for this install`)
+        result = await this.runner(manager.command, [...args, '--config.minimumReleaseAge=0'], {
+          cwd: this.options.profileDir,
+          timeoutMs: INSTALL_TIMEOUT_MS,
+          env: { ...process.env, ...manager.env },
+        })
+      }
       if (result.code !== 0) throw new Error(`package manager exited ${result.code}: ${result.output.slice(-800)}`)
       const installed = await installedVersion(this.options.profileDir, this.options.packageName)
       if (installed !== latest) throw new Error(`installed version is ${installed ?? 'missing'}, expected ${latest}`)

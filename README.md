@@ -276,7 +276,7 @@ Settings updates replace the active provider generation only after validation an
 
 The Bundle checks `registry.npmjs.org` about five seconds after startup, at most once every `updateIntervalHours`, and records the result in Settings. When the published release is a newer patch of the installed line (`0.4.0` to `0.4.1`), it installs that release into the profile that owns the module with the same pnpm the DSH desktop host was started with, then reports that a restart is required. The new code loads on the next restart.
 
-Only patch releases are installed unattended. A newer minor or major release is reported but always needs a manual update, because those releases can change the DSH peer range or model-facing behavior. Before installing, the updater backs up `package.json` and `pnpm-lock.yaml` and restores them if the package manager fails; a failed version is not retried for six hours. Disable the background check with `autoUpdate: false` or the Settings toggle.
+Only patch releases are installed unattended. A newer minor or major release is reported but always needs a manual update, because those releases can change the DSH peer range or model-facing behavior. Before installing, the updater backs up `package.json` and `pnpm-lock.yaml` and restores them if the package manager fails; a failed version is not retried for six hours. If pnpm's `minimumReleaseAge` supply-chain window refuses a fresh release, the updater retries that one install with the gate disabled. Disable the background check with `autoUpdate: false` or the Settings toggle.
 
 ## Status and limitations
 

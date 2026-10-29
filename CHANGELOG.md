@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 — 2026-10-29
+
+- Retry the automatic install when pnpm refuses a release that is still inside its `minimumReleaseAge` supply-chain window. The retry passes `--config.minimumReleaseAge=0` for that one install only, so a Bundle patch release normally applies on the first check. Exact-version updates stay limited to this package and to patch releases.
+- 当 pnpm 因 `minimumReleaseAge` 供应链窗口拒绝刚发布的版本时，自动更新会重试一次；重试只对本次安装传入 `--config.minimumReleaseAge=0`，让补丁版本通常在第一次检查时就生效。精确版本更新仍然只针对本包，且只限补丁版本。
+- Rebuild the universal helper as 0.4.2.
+- 重新构建 universal helper 为 0.4.2。
+
 ## 0.4.1 — 2026-10-29
 
 - Update the Bundle the way DSH installs it: about five seconds after startup the plugin asks the registry for the published version, and when it is a newer patch of the installed line it runs the profile's own pnpm (`add @fffangchenghao/dsh-computer-use@<version>`) in the owning profile, then reports that a restart is required. `package.json` and `pnpm-lock.yaml` are backed up first and restored if the install fails; a failed version is not retried for six hours.

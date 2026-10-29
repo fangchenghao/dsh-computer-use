@@ -124,6 +124,29 @@ describe('update check and self-update', () => {
     expect(state.updatedTo).toBe('0.4.1')
   })
 
+  it('retries past the package manager release-age gate for this package only', async () => {
+    const { profile } = await temporaryProfile()
+    const calls: string[][] = []
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      runner: async (_command, args) => {
+        calls.push(args)
+        if (calls.length === 1) {
+          return { code: 1, output: 'ERR_PNPM_NO_MATURE_MATCHING_VERSION: within the minimumReleaseAge cutoff' }
+        }
+        await writeFile(join(profile, 'node_modules', '@fffangchenghao', 'dsh-computer-use', 'package.json'),
+          JSON.stringify({ name: '@fffangchenghao/dsh-computer-use', version: '0.4.1' }))
+        return { code: 0, output: 'done' }
+      },
+    })
+    const status = await updater.update('0.4.1')
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toContain('--config.minimumReleaseAge=0')
+    expect(status.updatedTo).toBe('0.4.1')
+  })
+
   it('restores the profile files when the package manager fails', async () => {
     const { profile } = await temporaryProfile()
     const before = await readFile(join(profile, 'package.json'), 'utf8')
