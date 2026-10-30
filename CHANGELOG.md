@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.5 — 2026-10-30
+
+- Support DSH `0.2.1-rc.4` and `0.2.1-rc.5`: extend every DSH peer range and the declared compatibility matrix. DSH requires the running prerelease to be named explicitly, so `0.2.1-rc.3` alone made the plugin show as incompatible ("异常") after the host updated.
+- 支持 DSH `0.2.1-rc.4` 与 `0.2.1-rc.5`：扩展全部 DSH peer 范围与兼容性声明。DSH 要求精确列出当前运行的预发布版本，只声明到 `0.2.1-rc.3` 会让宿主升级后插件显示为不兼容（「异常」）。
+- Rebuild the universal helper as 0.4.5.
+- 重新构建 universal helper 为 0.4.5。
+
 ## 0.4.4 — 2026-10-29
 
 - Pass the update control into the macOS Settings route, so the "Version and updates" panel and the manual check/update buttons appear on macOS instead of only on unsupported platforms.
