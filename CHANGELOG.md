@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.6 — 2026-10-30
+
+- Support DSH `0.2.2-rc.1` and stop the recurring breakage at every host update: every DSH peer range and the compatibility matrix now also accept the whole `0.2.x` line (`>=0.2.2-rc.1 <0.3.0`). DSH's compatibility gate requires the running prerelease to satisfy the declared range, so a host update used to mark the plugin incompatible and remove it from the profile until a new release named that exact prerelease.
+- 支持 DSH `0.2.2-rc.1`，并避免每次宿主升级都断一次：全部 DSH peer 范围与兼容性声明同时接受整个 `0.2.x` 版本线（`>=0.2.2-rc.1 <0.3.0`）。DSH 的兼容性检查要求当前预发布版本满足声明范围，以前每次宿主升级都会把插件判为不兼容并从 profile 中移除，直到发布一个点名该预发布版本的新版本。
+- Rebuild the universal helper as 0.4.6.
+- 重新构建 universal helper 为 0.4.6。
+
 ## 0.4.5 — 2026-10-30
 
 - Support DSH `0.2.1-rc.4` and `0.2.1-rc.5`: extend every DSH peer range and the declared compatibility matrix. DSH requires the running prerelease to be named explicitly, so `0.2.1-rc.3` alone made the plugin show as incompatible ("异常") after the host updated.
