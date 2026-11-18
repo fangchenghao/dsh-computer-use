@@ -72,17 +72,43 @@ export declare class ComputerUseUpdater {
     private timer;
     private intervalTimer;
     private running;
+    /** Whether start() armed the background schedule, so configure() can re-arm it. */
+    private started;
+    /** Serializes registry checks so a manual click and a scheduled run never overlap. */
+    private checking;
+    /** Serializes installs so only one package-manager run can touch the profile at a time. */
+    private installing;
     constructor(options: UpdateOptions);
     /** Current update state, safe to serialize into the Settings snapshot. */
     status(): UpdateStatus;
+    /**
+     * Apply live Settings changes. A toggle or interval change re-arms the
+     * background schedule without touching any in-flight install.
+     */
+    configure(settings: {
+        autoUpdate?: boolean;
+        intervalHours?: number;
+    }): void;
     /** Start the background check; the first check runs shortly after plugin startup. */
     start(): void;
+    private armTimers;
     /** Stop the background timer. */
     dispose(): void;
-    /** Read the newest published version without changing the installation. */
+    private clearTimers;
+    /**
+     * Read the newest published version without changing the installation.
+     * Concurrent callers share the in-flight result, and a check never runs
+     * while an install is editing the profile.
+     */
     check(): Promise<UpdateStatus>;
-    /** Install a published version into the profile that owns this module. */
+    private performCheck;
+    /**
+     * Install a published version into the profile that owns this module.
+     * An explicit version must be valid SemVer; concurrent calls share the
+     * running install instead of starting a second package-manager run.
+     */
     update(version?: string): Promise<UpdateStatus>;
+    private performUpdate;
     private runScheduledCheck;
     private readState;
     private writeState;

@@ -1,6 +1,7 @@
 /** DSH Computer Use model-facing consumer and progressive Skill bundle. */
 import { Service, type Context } from '@deepseek-ai/cordis';
-import { type ComputerUseConfig } from './config.ts';
+import type { ComputerUseBackend } from './backend.ts';
+import { type ComputerUseConfig, type ResolvedComputerUseConfig } from './config.ts';
 import { MacOSComputerUseProvider } from './providers/macos.ts';
 import { type ComputerUseUpdateControl } from './web.ts';
 export { Config } from './config.ts';
@@ -15,6 +16,7 @@ export declare class ComputerUseBundle extends MacOSComputerUseProvider {
     static Config: import("@deepseek-ai/schemastery").default<ComputerUseConfig>;
     private consumerDispose;
     private updateControl;
+    private updater;
     private readonly updateSettings;
     constructor(ctx: Context, config?: ComputerUseConfig);
     /** Publish model-facing capabilities only after provider integrity and health pass. */
@@ -24,6 +26,12 @@ export declare class ComputerUseBundle extends MacOSComputerUseProvider {
      * install newer patch releases into the profile that owns this module.
      */
     private startUpdater;
+    /**
+     * Keep the background updater in step with Settings. The provider rebuilds
+     * its backend generation on every accepted Settings change, which is the
+     * same lifecycle hook the backend itself uses.
+     */
+    protected reconfigure(backend: ComputerUseBackend, config: ResolvedComputerUseConfig): Promise<void>;
 }
 export default ComputerUseBundle;
 //# sourceMappingURL=index.d.ts.map

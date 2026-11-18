@@ -1,7 +1,7 @@
 /** Registry update check and profile-level self-update for this Bundle. */
 
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -189,6 +189,12 @@ export class ComputerUseUpdater {
   private timer: NodeJS.Timeout | undefined
   private intervalTimer: NodeJS.Timeout | undefined
   private running = false
+  /** Whether start() armed the background schedule, so configure() can re-arm it. */
+  private started = false
+  /** Serializes registry checks so a manual click and a scheduled run never overlap. */
+  private checking: Promise<UpdateStatus> | undefined
+  /** Serializes installs so only one package-manager run can touch the profile at a time. */
+  private installing: Promise<UpdateStatus> | undefined
 
   constructor(options: UpdateOptions) {
     this.options = options
@@ -209,12 +215,40 @@ export class ComputerUseUpdater {
     return { ...this.state }
   }
 
+  /**
+   * Apply live Settings changes. A toggle or interval change re-arms the
+   * background schedule without touching any in-flight install.
+   */
+  configure(settings: { autoUpdate?: boolean; intervalHours?: number }): void {
+    let changed = false
+    if (settings.autoUpdate !== undefined && settings.autoUpdate !== this.options.autoUpdate) {
+      this.options.autoUpdate = settings.autoUpdate
+      changed = true
+    }
+    if (settings.intervalHours !== undefined && settings.intervalHours !== this.options.intervalHours) {
+      this.options.intervalHours = settings.intervalHours
+      changed = true
+    }
+    if (!changed) return
+    this.log('info', this.options.autoUpdate === false
+      ? 'automatic update is now disabled by configuration'
+      : `automatic update will now check every ${this.options.intervalHours ?? 24} hour(s)`)
+    this.clearTimers()
+    if (this.started && this.options.autoUpdate !== false) this.armTimers()
+  }
+
   /** Start the background check; the first check runs shortly after plugin startup. */
   start(): void {
+    this.started = true
     if (this.options.autoUpdate === false) {
       this.log('info', 'automatic update is disabled by configuration')
       return
     }
+    this.armTimers()
+  }
+
+  private armTimers(): void {
+    this.clearTimers()
     this.timer = setTimeout(() => {
       void this.runScheduledCheck()
     }, 5_000)
@@ -228,14 +262,38 @@ export class ComputerUseUpdater {
 
   /** Stop the background timer. */
   dispose(): void {
+    this.started = false
+    this.clearTimers()
+  }
+
+  private clearTimers(): void {
     if (this.timer !== undefined) clearTimeout(this.timer)
     if (this.intervalTimer !== undefined) clearInterval(this.intervalTimer)
     this.timer = undefined
     this.intervalTimer = undefined
   }
 
-  /** Read the newest published version without changing the installation. */
+  /**
+   * Read the newest published version without changing the installation.
+   * Concurrent callers share the in-flight result, and a check never runs
+   * while an install is editing the profile.
+   */
   async check(): Promise<UpdateStatus> {
+    if (this.running) {
+      return { ...this.state, error: this.state.error ?? 'update check skipped: an update is already installing' }
+    }
+    const pending = this.checking
+    if (pending !== undefined) return await pending
+    const run = this.performCheck()
+    this.checking = run
+    try {
+      return await run
+    } finally {
+      if (this.checking === run) this.checking = undefined
+    }
+  }
+
+  private async performCheck(): Promise<UpdateStatus> {
     const registry = (this.options.registry ?? 'https://registry.npmjs.org').replace(/\/+$/u, '')
     const url = `${registry}/${this.options.packageName.replace('/', '%2F')}/latest`
     try {
@@ -267,15 +325,38 @@ export class ComputerUseUpdater {
     }
   }
 
-  /** Install a published version into the profile that owns this module. */
+  /**
+   * Install a published version into the profile that owns this module.
+   * An explicit version must be valid SemVer; concurrent calls share the
+   * running install instead of starting a second package-manager run.
+   */
   async update(version?: string): Promise<UpdateStatus> {
-    if (this.running) return this.status()
+    if (version !== undefined && parseVersion(version) === undefined) {
+      const message = `update failed: "${version}" is not a valid SemVer version`
+      this.state = { ...this.state, installing: false, error: message }
+      this.log('warn', message)
+      return this.status()
+    }
+    const pending = this.installing
+    if (pending !== undefined) return await pending
+    const run = this.performUpdate(version)
+    this.installing = run
+    try {
+      return await run
+    } finally {
+      if (this.installing === run) this.installing = undefined
+    }
+  }
+
+  private async performUpdate(version?: string): Promise<UpdateStatus> {
     this.running = true
     const { error: _previousError, ...rest } = this.state
     this.state = { ...rest, installing: true }
     const backup = join(this.options.profileDir, STATE_DIR, `backup-${this.now()}`)
     try {
-      const latest = version ?? this.state.latest ?? (await this.check()).latest
+      // Use the internal check so the install's own running flag does not
+      // short-circuit the lookup it depends on.
+      const latest = version ?? this.state.latest ?? (await this.performCheck()).latest
       if (latest === undefined) throw new Error('no published version was resolved')
       if (this.state.updatedTo === latest) {
         this.state = { ...this.state, available: false, installing: false }
@@ -322,6 +403,7 @@ export class ComputerUseUpdater {
         checkedAt: new Date(this.now()).toISOString(),
       }
       await this.writeState({ checkedAt: this.now(), updatedTo: latest })
+      await pruneBackups(this.options.profileDir, this.log.bind(this))
       this.log('info', `updated to ${latest}; restart DeepSeek Harness to load it`)
       return this.status()
     } catch (error) {
@@ -395,6 +477,31 @@ async function installedVersion(profileDir: string, packageName: string): Promis
     return typeof manifest.version === 'string' ? manifest.version : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Keep the newest backup beside the profile and drop the rest. Backups are
+ * single-install rollback material only, so one copy is always enough.
+ */
+async function pruneBackups(profileDir: string, log: (level: 'info' | 'warn', message: string) => void): Promise<void> {
+  const stateDir = join(profileDir, STATE_DIR)
+  let entries: string[]
+  try {
+    entries = await readdir(stateDir)
+  } catch {
+    return
+  }
+  const backups = entries
+    .filter(entry => /^backup-\d+$/u.test(entry))
+    .sort((left, right) => Number(right.slice('backup-'.length)) - Number(left.slice('backup-'.length)))
+  for (const stale of backups.slice(1)) {
+    try {
+      await rm(join(stateDir, stale), { recursive: true, force: true })
+      log('info', `removed stale update backup ${stale}`)
+    } catch (error) {
+      log('warn', `could not remove stale update backup ${stale}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 

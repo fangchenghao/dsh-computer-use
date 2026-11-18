@@ -1458,4 +1458,23 @@ describe('screenshot coordinate space', () => {
       await workspace.cleanup()
     }
   })
+
+  it('rejects an empty wait condition immediately instead of running the timeout', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-wait-empty-')
+    try {
+      const { service } = serviceHarness()
+      await service.initializeForTest()
+      const agent = fakeAgent(workspace.path)
+      const context = callContext(agent, workspace.path)
+      const observation = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      vi.useFakeTimers()
+      const started = Date.now()
+      await expect(service.act({ kind: 'wait', observationId: observation.observationId, condition: {}, timeoutMs: 100 }, context))
+        .rejects.toMatchObject({ code: 'COMPUTER_ACTION_BLOCKED' })
+      expect(Date.now() - started).toBe(0)
+      vi.useRealTimers()
+    } finally {
+      await workspace.cleanup()
+    }
+  })
 })

@@ -5,7 +5,8 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-tools'
-import { Config, readComputerUseConfig, resolveConfig, type ComputerUseConfig } from './config.ts'
+import type { ComputerUseBackend } from './backend.ts'
+import { Config, readComputerUseConfig, resolveConfig, type ComputerUseConfig, type ResolvedComputerUseConfig } from './config.ts'
 import { ComputerUseExposure } from './exposure.ts'
 import { MacOSComputerUseProvider } from './providers/macos.ts'
 import { COMPUTER_USE_SKILL, LEGACY_COMPUTER_USE_SKILL } from './skill.ts'
@@ -53,12 +54,17 @@ export class ComputerUseBundle extends MacOSComputerUseProvider {
 
   private consumerDispose: (() => void) | undefined
   private updateControl: ComputerUseUpdateControl | undefined
+  private updater: ComputerUseUpdater | undefined
   private readonly updateSettings: { autoUpdate: boolean; intervalHours: number }
 
   constructor(ctx: Context, config: ComputerUseConfig = {}) {
     super(ctx, config)
     const resolved = resolveConfig(readComputerUseConfig(config))
     this.updateSettings = { autoUpdate: resolved.autoUpdate, intervalHours: resolved.updateIntervalHours }
+    ctx.effect(() => () => {
+      this.updater?.dispose()
+      this.updater = undefined
+    }, 'dsh-computer-use: updater lifecycle')
     ctx.effect(() => () => {
       this.consumerDispose?.()
       this.consumerDispose = undefined
@@ -104,8 +110,20 @@ export class ComputerUseBundle extends MacOSComputerUseProvider {
       check: () => updater.check(),
       apply: () => updater.update(),
     }
+    this.updater = updater
     updater.start()
-    this.ctx.effect(() => () => updater.dispose(), 'dsh-computer-use: update lifecycle')
+  }
+
+  /**
+   * Keep the background updater in step with Settings. The provider rebuilds
+   * its backend generation on every accepted Settings change, which is the
+   * same lifecycle hook the backend itself uses.
+   */
+  protected override async reconfigure(backend: ComputerUseBackend, config: ResolvedComputerUseConfig): Promise<void> {
+    await super.reconfigure(backend, config)
+    this.updateSettings.autoUpdate = config.autoUpdate
+    this.updateSettings.intervalHours = config.updateIntervalHours
+    this.updater?.configure({ autoUpdate: config.autoUpdate, intervalHours: config.updateIntervalHours })
   }
 }
 

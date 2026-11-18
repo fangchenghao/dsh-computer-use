@@ -185,12 +185,18 @@ function normalizeActionCoordinates(
   return action
 }
 
+/** Whether the condition names at least one thing this wait can actually observe. */
+function hasWaitCondition(condition: Extract<ComputerActionRequest, { kind: 'wait' }>['condition']): boolean {
+  const named = (value: string | undefined): boolean => value !== undefined && value.trim().length > 0
+  return named(condition.text) || named(condition.elementRole) || named(condition.elementTitle)
+}
+
 function matchesWait(observation: BackendObservation, action: Extract<ComputerActionRequest, { kind: 'wait' }>): boolean {
   const condition = action.condition
   if (condition.text !== undefined && !observation.treeText.toLocaleLowerCase().includes(condition.text.toLocaleLowerCase())) return false
   if (condition.elementRole !== undefined && !observation.elements.some(element => element.role === condition.elementRole)) return false
   if (condition.elementTitle !== undefined && !observation.elements.some(element => element.title === condition.elementTitle || element.label === condition.elementTitle)) return false
-  return condition.text !== undefined || condition.elementRole !== undefined || condition.elementTitle !== undefined
+  return hasWaitCondition(condition)
 }
 
 function targetIndex(action: ComputerActionRequest): number | undefined {
@@ -810,6 +816,14 @@ export class ComputerUseService extends Service {
     context: ComputerUseContext,
     signal: AbortSignal,
   ): Promise<ComputerActionResult> {
+    if (!hasWaitCondition(action.condition)) {
+      // An empty condition can never be satisfied and can never be reported as
+      // met, so reject it up front instead of burning the whole timeout.
+      throw new ComputerUseError(
+        'COMPUTER_ACTION_BLOCKED',
+        'wait requires at least one of condition.text, condition.elementRole, or condition.elementTitle; an empty condition can never be met',
+      )
+    }
     await this.leases.ensure(context.agent, stored.backend.app, 'read', 'computer_wait', context.callId, signal)
     const timeoutMs = action.timeoutMs ?? this.config.maxSettleMs
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > this.config.maxSettleMs) {

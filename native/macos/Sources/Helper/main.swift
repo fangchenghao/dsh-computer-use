@@ -6,7 +6,7 @@ import Darwin
 import Foundation
 import ScreenCaptureKit
 
-private let helperVersion = "0.4.6"
+private let helperVersion = "0.4.7"
 
 private struct HelperError: Error {
     let code: String

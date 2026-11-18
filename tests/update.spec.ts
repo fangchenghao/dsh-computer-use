@@ -1,6 +1,6 @@
 /** Unit coverage for the registry update check and profile-level self-update. */
 
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -162,5 +162,108 @@ describe('update check and self-update', () => {
     const status = await updater.update('0.4.1')
     expect(status.error).toContain('registry unreachable')
     expect(await readFile(join(profile, 'package.json'), 'utf8')).toBe(before)
+  })
+
+  it('rejects an explicit version that is not SemVer before spawning the package manager', async () => {
+    const { profile } = await temporaryProfile()
+    const calls: string[][] = []
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      runner: async (_command, args) => {
+        calls.push(args)
+        return { code: 0, output: 'done' }
+      },
+    })
+    const status = await updater.update('latest')
+    expect(calls).toHaveLength(0)
+    expect(status.error).toContain('not a valid SemVer version')
+    expect(status.installing).toBe(false)
+    expect(status.updatedTo).toBeUndefined()
+  })
+
+  it('keeps only the newest backup directory after a successful update', async () => {
+    const { profile } = await temporaryProfile()
+    const stateDir = join(profile, '.dsh-computer-use')
+    await mkdir(join(stateDir, 'backup-1000'), { recursive: true })
+    await mkdir(join(stateDir, 'backup-2000'), { recursive: true })
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      now: () => 3000,
+      runner: async () => {
+        await writeFile(join(profile, 'node_modules', '@fffangchenghao', 'dsh-computer-use', 'package.json'),
+          JSON.stringify({ name: '@fffangchenghao/dsh-computer-use', version: '0.4.1' }))
+        return { code: 0, output: 'done' }
+      },
+    })
+    const status = await updater.update('0.4.1')
+    expect(status.updatedTo).toBe('0.4.1')
+    const names = (await readdir(stateDir)).filter(entry => entry.startsWith('backup-')).sort()
+    expect(names).toEqual(['backup-3000'])
+  })
+
+  it('shares one registry check between concurrent callers', async () => {
+    const { profile } = await temporaryProfile()
+    let fetches = 0
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      fetchImpl: (async () => {
+        fetches += 1
+        return new Response(JSON.stringify({ version: '0.4.1' }), { status: 200 })
+      }) as typeof fetch,
+    })
+    const [first, second] = await Promise.all([updater.check(), updater.check()])
+    expect(fetches).toBe(1)
+    expect(first.latest).toBe('0.4.1')
+    expect(second.latest).toBe('0.4.1')
+  })
+
+  it('does not start a second install while one is already running', async () => {
+    const { profile } = await temporaryProfile()
+    let runs = 0
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      runner: async () => {
+        runs += 1
+        await gate
+        await writeFile(join(profile, 'node_modules', '@fffangchenghao', 'dsh-computer-use', 'package.json'),
+          JSON.stringify({ name: '@fffangchenghao/dsh-computer-use', version: '0.4.1' }))
+        return { code: 0, output: 'done' }
+      },
+    })
+    const first = updater.update('0.4.1')
+    await Promise.resolve()
+    const second = updater.update('0.4.1')
+    release?.()
+    const [a, b] = await Promise.all([first, second])
+    expect(runs).toBe(1)
+    expect(a.updatedTo).toBe('0.4.1')
+    expect(b.updatedTo).toBe('0.4.1')
+  })
+
+  it('re-arms the background schedule when autoUpdate is configured live', async () => {
+    const { profile } = await temporaryProfile()
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      autoUpdate: false,
+      intervalHours: 24,
+    })
+    updater.start()
+    updater.configure({ autoUpdate: true, intervalHours: 6 })
+    updater.configure({ autoUpdate: true, intervalHours: 6 })
+    updater.configure({ autoUpdate: false })
+    updater.dispose()
+    expect(updater.status().installing).toBe(false)
   })
 })

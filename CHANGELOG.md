@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.7 — 2026-11-18
+
+- Apply the Settings `autoUpdate` toggle and `updateIntervalHours` live: the updater re-arms or clears its timers through a new `configure()` hook wired to the provider's reconfigure lifecycle, so changing the toggle no longer needs a restart.
+- Harden the updater: concurrent `check()` calls share one registry request, concurrent `update()` calls share one package-manager run, an explicit version that is not SemVer is rejected before touching the profile, and old `backup-*` directories are pruned after a successful install (the newest is kept for rollback).
+- Reject a `computer_wait` action whose condition names no text, role, or title before taking the lease or starting the timeout, instead of polling until the deadline. Blank strings count as unnamed.
+- 设置页的 `autoUpdate` 开关与 `updateIntervalHours` 现在实时生效：更新器新增 `configure()`，挂在 provider 的 reconfigure 生命周期上，改开关不再需要重启。
+- 更新器加固：并发 `check()` 共享一次 registry 请求，并发 `update()` 共享一次包管理器执行，非 SemVer 的显式版本在触碰 profile 前直接拒绝，成功安装后清理旧的 `backup-*` 目录（保留最新一份用于回滚）。
+- `computer_wait` 的条件若没有 text、role 或 title，会在取租约和开始计时前直接拒绝，不再空转到超时；空白字符串同样视为未命名。
+- Rebuild the universal helper as 0.4.7.
+- 重新构建 universal helper 为 0.4.7。
+
 ## 0.4.6 — 2026-10-30
 
 - Support DSH `0.2.2-rc.1` and stop the recurring breakage at every host update: every DSH peer range and the compatibility matrix now also accept the whole `0.2.x` line (`>=0.2.2-rc.1 <0.3.0`). DSH's compatibility gate requires the running prerelease to satisfy the declared range, so a host update used to mark the plugin incompatible and remove it from the profile until a new release named that exact prerelease.
