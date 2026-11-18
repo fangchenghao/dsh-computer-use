@@ -57,7 +57,7 @@ declare const en: {
     readonly cursorClickDelay: "Delay after arrival before click (ms)";
     readonly cursorAutoHide: "Cursor auto-hide (ms; 0 = stay visible)";
     readonly grants: "Application grants";
-    readonly grantsHint: "One exact bundle id per line, followed by read or read,control. Wildcards are rejected.";
+    readonly grantsHint: "One exact bundle id per line, followed by read, read,control, or none. Wildcards are rejected.";
     readonly allowAllApps: "Allow read and control for every app";
     readonly allowAllAppsHint: "When enabled, exact grants are ignored and every running app is readable and controllable.";
     readonly save: "Save and apply";
@@ -82,12 +82,76 @@ declare const en: {
     readonly autoUpdateHint: "Minor and major releases always require a manual update.";
 };
 type LocaleKey = keyof typeof en;
+type Translate = (key: LocaleKey, params?: Record<string, string | number>) => string;
+export interface ConfigValue {
+    observationTtlMs?: number;
+    confirmationTtlMs?: number;
+    actionTimeoutMs?: number;
+    settleMs?: number;
+    maxSettleMs?: number;
+    maxNodes?: number;
+    maxDepth?: number;
+    maxTextBytes?: number;
+    maxScreenshotBytes?: number;
+    artifactRoot?: string;
+    helper?: {
+        path?: string;
+        allowSourceBuild?: boolean;
+    };
+    interaction?: {
+        focusPolicy?: 'preserve' | 'activate';
+        keyboardPolicy?: 'preserve' | 'activate';
+        pointerInputPolicy?: 'deny' | 'targeted';
+        cursorVisualization?: 'hidden' | 'visible';
+        cursorMotionMs?: number;
+        cursorSpeedPxPerSecond?: number;
+        cursorAccelerationPxPerSecondSquared?: number;
+        cursorClickDelayMs?: number;
+        cursorAutoHideMs?: number;
+    };
+    allowAllApps?: boolean;
+    autoUpdate?: boolean;
+    grants?: Array<{
+        bundleId: string;
+        read?: boolean;
+        control?: boolean;
+    }>;
+}
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
         /** DSH Computer Use Settings copy. */
         'computer-use': LocaleKey;
     }
 }
+export interface Draft {
+    observationTtlMs: string;
+    confirmationTtlMs: string;
+    actionTimeoutMs: string;
+    settleMs: string;
+    maxSettleMs: string;
+    maxNodes: string;
+    maxDepth: string;
+    maxTextBytes: string;
+    maxScreenshotBytes: string;
+    artifactRoot: string;
+    helperPath: string;
+    allowSourceBuild: boolean;
+    focusPolicy: 'preserve' | 'activate';
+    keyboardPolicy: 'preserve' | 'activate';
+    pointerInputPolicy: 'deny' | 'targeted';
+    cursorVisualization: 'hidden' | 'visible';
+    cursorSpeedPxPerSecond: string;
+    cursorAccelerationPxPerSecondSquared: string;
+    cursorClickDelayMs: string;
+    cursorAutoHideMs: string;
+    allowAllApps: boolean;
+    autoUpdate: boolean;
+    grants: string;
+}
+/** Project effective settings into the editable form without granting new access. */
+export declare function draftOf(value: ConfigValue): Draft;
+/** Serialize a draft while preserving no-grant entries and legacy control shorthand. */
+export declare function configOf(draft: Draft, t: Translate): ConfigValue;
 /** Required browser services. */
 export declare const inject: string[];
 /** Register the Computer Use Settings section. */

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.8 — 2026-11-18
+
+- Stop silently escalating app grants: a grant with `read: false` and `control: false` was projected into the Settings form as `read` and came back as a readable grant on the next save. The form now round-trips it as `none`, rejects mixed `none` scopes, and keeps disabled entries through unrelated saves.
+- Make cancellation safe to observe: an AbortSignal or native `AbortError` becomes `COMPUTER_CANCELLED` instead of a generic provider failure, and when input may already have been sent the message says to observe the current state before retrying. Cancellation is re-checked before consuming a one-use confirmation and after each post-action observation, so a cancelled action cannot keep typing or spend a confirmation token.
+- Harden the native helper protocol: validate the response envelope and error code, keep up to 1000 characters of helper stderr for malformed JSON or malformed envelopes, reject a success frame when the process exited non-zero, and include stderr in drag-helper exit failures.
+- 阻止应用授权被静默放大：`read: false`、`control: false` 的授权在设置页被投影成 `read`，下次保存就变成可读取授权。现在按 `none` 往返，拒绝混用 `none` 的作用域，并在保存无关设置时保留禁用条目。
+- 取消更安全：AbortSignal 或原生 `AbortError` 统一为 `COMPUTER_CANCELLED`，若输入可能已发出会提示先观察当前状态再重试；在消费一次性确认之前和每次动作后观察之后都会重新检查取消，取消后不会继续输入或消耗确认 token。
+- 加固 native helper 协议：校验响应 envelope 与错误码，JSON 或 envelope 畸形时保留最多 1000 字符 stderr，进程非零退出即使带回成功帧也判失败，拖拽 helper 退出失败时也附带 stderr。
+- Rebuild the universal helper as 0.4.8.
+- 重新构建 universal helper 为 0.4.8。
+
 ## 0.4.7 — 2026-11-18
 
 - Apply the Settings `autoUpdate` toggle and `updateIntervalHours` live: the updater re-arms or clears its timers through a new `configure()` hook wired to the provider's reconfigure lifecycle, so changing the toggle no longer needs a restart.

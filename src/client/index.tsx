@@ -84,7 +84,7 @@ const en = {
   cursorClickDelay: 'Delay after arrival before click (ms)',
   cursorAutoHide: 'Cursor auto-hide (ms; 0 = stay visible)',
   grants: 'Application grants',
-  grantsHint: 'One exact bundle id per line, followed by read or read,control. Wildcards are rejected.',
+  grantsHint: 'One exact bundle id per line, followed by read, read,control, or none. Wildcards are rejected.',
   allowAllApps: 'Allow read and control for every app',
   allowAllAppsHint: 'When enabled, exact grants are ignored and every running app is readable and controllable.',
   save: 'Save and apply',
@@ -165,7 +165,7 @@ const zh: Record<LocaleKey, string> = {
   cursorClickDelay: '到达后点击延迟（毫秒）',
   cursorAutoHide: '光标自动隐藏（毫秒；0 = 保持显示）',
   grants: '指定应用规则',
-  grantsHint: '每行填写一个应用标识，后接 read 或 read,control。应用标识必须完整，不能使用通配符。',
+  grantsHint: '每行填写一个应用标识，后接 read、read,control 或 none。应用标识必须完整，不能使用通配符。',
   allowAllApps: '允许读取和操作所有应用',
   allowAllAppsHint: '开启后无需逐个添加应用。关闭后，可在高级设置中填写允许访问的应用。',
   save: '保存设置',
@@ -192,7 +192,7 @@ const zh: Record<LocaleKey, string> = {
 
 type Translate = (key: LocaleKey, params?: Record<string, string | number>) => string
 
-interface ConfigValue {
+export interface ConfigValue {
   observationTtlMs?: number
   confirmationTtlMs?: number
   actionTimeoutMs?: number
@@ -330,7 +330,7 @@ class ComputerUseSettingsController {
   }
 }
 
-interface Draft {
+export interface Draft {
   observationTtlMs: string
   confirmationTtlMs: string
   actionTimeoutMs: string
@@ -356,7 +356,8 @@ interface Draft {
   grants: string
 }
 
-function draftOf(value: ConfigValue): Draft {
+/** Project effective settings into the editable form without granting new access. */
+export function draftOf(value: ConfigValue): Draft {
   return {
     observationTtlMs: String(value.observationTtlMs ?? 0),
     confirmationTtlMs: String(value.confirmationTtlMs ?? 300000),
@@ -380,7 +381,7 @@ function draftOf(value: ConfigValue): Draft {
     cursorAutoHideMs: String(value.interaction?.cursorAutoHideMs ?? 0),
     allowAllApps: value.allowAllApps ?? false,
     autoUpdate: value.autoUpdate ?? true,
-    grants: (value.grants ?? []).map(grant => `${grant.bundleId} ${grant.control === true ? 'read,control' : 'read'}`).join('\n'),
+    grants: (value.grants ?? []).map(grant => `${grant.bundleId} ${grant.control === true ? 'read,control' : grant.read === true ? 'read' : 'none'}`).join('\n'),
   }
 }
 
@@ -390,14 +391,20 @@ function integer(value: string, name: string): number {
   return parsed
 }
 
-function configOf(draft: Draft, t: Translate): ConfigValue {
+/** Serialize a draft while preserving no-grant entries and legacy control shorthand. */
+export function configOf(draft: Draft, t: Translate): ConfigValue {
   const rangeError = (field: string, min: number, max: number): string => t('numberRange', { field, min, max })
   const grants = draft.grants.split(/\r?\n/u).map(line => line.trim()).filter(Boolean).map((line) => {
     const [bundleId, rawScopes, ...extra] = line.split(/\s+/u)
     if (bundleId === undefined || rawScopes === undefined || extra.length > 0) throw new Error(`invalid grant line: ${line}`)
     const scopes = new Set(rawScopes.split(','))
-    if (![...scopes].every(scope => scope === 'read' || scope === 'control')) throw new Error(`invalid grant scope: ${line}`)
-    return { bundleId, read: true, control: scopes.has('control') }
+    if (![...scopes].every(scope => scope === 'read' || scope === 'control' || scope === 'none')
+      || (scopes.has('none') && scopes.size !== 1)) throw new Error(`invalid grant scope: ${line}`)
+    return {
+      bundleId,
+      read: scopes.has('read') || scopes.has('control'),
+      control: scopes.has('control'),
+    }
   })
   return {
     observationTtlMs: integer(draft.observationTtlMs, 'observationTtlMs'),

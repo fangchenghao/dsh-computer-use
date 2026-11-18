@@ -423,6 +423,376 @@ describe('Computer Use Service', () => {
     }
   })
 
+  it('rejects an already-cancelled action before provider work without implying input was sent', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-before-input-')
+    try {
+      const { backend, service, request } = serviceHarness()
+      await service.initializeForTest()
+      const controller = new AbortController()
+      const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      const act = vi.spyOn(backend, 'act')
+      const observe = vi.spyOn(backend, 'observe')
+      const reason = new Error('caller stopped before input')
+      controller.abort(reason)
+
+      const action = service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context)
+      await expect(action).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        cause: reason,
+        message: expect.not.stringContaining('may already have executed'),
+      })
+      expect(act).not.toHaveBeenCalled()
+      expect(observe).not.toHaveBeenCalled()
+      expect(backend.cursorActions).toHaveLength(0)
+      expect(request).not.toHaveBeenCalled()
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('keeps cancellation during pre-input cursor movement distinct from an attempted action', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-cursor-before-')
+    try {
+      const { backend, service } = serviceHarness()
+      await service.initializeForTest()
+      const controller = new AbortController()
+      const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      const reason = new Error('cursor movement interrupted')
+      const visualize = vi.spyOn(backend, 'visualizeCursor').mockImplementation(async () => {
+        controller.abort(reason)
+        throw reason
+      })
+      const act = vi.spyOn(backend, 'act')
+
+      await expect(service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context))
+        .rejects.toMatchObject({
+          code: 'COMPUTER_CANCELLED',
+          cause: reason,
+          message: expect.not.stringContaining('may already have executed'),
+        })
+      expect(visualize).toHaveBeenCalledOnce()
+      expect(visualize.mock.calls[0]?.[1]).toBe('before')
+      expect(act).not.toHaveBeenCalled()
+      expect(backend.actions).toHaveLength(0)
+      expect(backend.observations).toHaveLength(1)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('does not dispatch input or consume confirmation when the pre-input cursor resolves after cancellation', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-cursor-race-')
+    try {
+      const { backend, service } = serviceHarness()
+      await service.initializeForTest()
+      const controller = new AbortController()
+      const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      const proposed: ComputerActionRequest = {
+        kind: 'click', observationId: before.observationId, elementIndex: 1, sensitive: true,
+      }
+      const confirmation = await service.confirm({ action: proposed, reason: 'Apply fixture change', target: 'fixture' }, context)
+      const act = vi.spyOn(backend, 'act')
+      vi.spyOn(backend, 'visualizeCursor').mockImplementationOnce(async () => {
+        controller.abort()
+        return { visible: true }
+      })
+      const confirmed = { ...proposed, confirmationToken: confirmation.token }
+
+      await expect(service.act(confirmed, context)).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        message: expect.not.stringContaining('may already have executed'),
+      })
+      expect(act).not.toHaveBeenCalled()
+      expect(backend.actions).toHaveLength(0)
+      // A cancellation before input must not burn the one-use authorization.
+      await expect(service.act(confirmed, { ...context, signal: new AbortController().signal }))
+        .resolves.toMatchObject({ action: 'click' })
+      expect(act).toHaveBeenCalledOnce()
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('rejects cancellation even when the post-action observation resolves with settleMs zero', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-observe-race-')
+    try {
+      const { backend, service } = serviceHarness({ settleMs: 0 })
+      await service.initializeForTest()
+      const controller = new AbortController()
+      const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      const originalObserve = backend.observe.bind(backend)
+      const observe = vi.spyOn(backend, 'observe').mockImplementation(async (app, options) => {
+        const fresh = await originalObserve(app, options)
+        controller.abort()
+        return fresh
+      })
+      const act = vi.spyOn(backend, 'act')
+      const action = service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context)
+
+      await expect(action).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        message: expect.stringContaining('may already have executed'),
+      })
+      await expect(action).rejects.toThrow('observe the current state before retrying')
+      expect(act).toHaveBeenCalledOnce()
+      await expect(act.mock.results[0]?.value).resolves.toMatchObject({ channel: 'accessibility' })
+      expect(observe).toHaveBeenCalledOnce()
+      await expect(observe.mock.results[0]?.value).resolves.toMatchObject({ stateHash: 'state-2' })
+      expect(backend.actions).toHaveLength(1)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('maps cancellation during the real settle timer to cancellation with an executed-action warning', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-settle-timer-')
+    let cancelTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const { backend, service } = serviceHarness({ settleMs: 100, maxSettleMs: 200 })
+      await service.initializeForTest()
+      const controller = new AbortController()
+      const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      const reason = new Error('caller stopped during settling')
+      const originalAct = backend.act.bind(backend)
+      const act = vi.spyOn(backend, 'act').mockImplementation(async request => {
+        const outcome = await originalAct(request)
+        // Let actNow enter node:timers/promises.delay before aborting. The
+        // ABORT_ERR assertion below distinguishes the timer from a signal guard.
+        cancelTimer = setTimeout(() => { controller.abort(reason) }, 10)
+        return outcome
+      })
+      const observe = vi.spyOn(backend, 'observe')
+      const action = service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context)
+
+      await expect(action).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        cause: { name: 'AbortError', code: 'ABORT_ERR', cause: reason },
+        message: expect.stringContaining('may already have executed'),
+      })
+      await expect(action).rejects.toThrow('observe the current state before retrying')
+      expect(act).toHaveBeenCalledOnce()
+      await expect(act.mock.results[0]?.value).resolves.toMatchObject({ channel: 'accessibility' })
+      expect(backend.actions).toHaveLength(1)
+      expect(observe).not.toHaveBeenCalled()
+      expect(backend.cursorActions.map(entry => entry.phase)).toEqual(['before', 'after'])
+    } finally {
+      if (cancelTimer !== undefined) clearTimeout(cancelTimer)
+      await workspace.cleanup()
+    }
+  })
+
+  it('rejects cancellation after a successful post-action screenshot capture instead of returning success', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-capture-race-')
+    try {
+      const { backend, service } = serviceHarness()
+      await service.initializeForTest()
+      const controller = new AbortController()
+      const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'required' }, context)
+      const originalObserve = backend.observe.bind(backend)
+      const reason = new Error('caller stopped after screenshot capture')
+      const observe = vi.spyOn(backend, 'observe').mockImplementation(async (app, options) => {
+        const fresh = await originalObserve(app, options)
+        // The settle observation succeeds with a live signal. Only the final
+        // screenshot capture aborts, after its provider promise has fulfilled.
+        if (options.screenshot !== 'none') controller.abort(reason)
+        return fresh
+      })
+      const act = vi.spyOn(backend, 'act')
+      const action = service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context)
+
+      await expect(action).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        cause: reason,
+        message: expect.stringContaining('may already have executed'),
+      })
+      await expect(action).rejects.toThrow('observe the current state before retrying')
+      expect(act).toHaveBeenCalledOnce()
+      await expect(act.mock.results[0]?.value).resolves.toMatchObject({ channel: 'accessibility' })
+      expect(observe.mock.calls.map(call => call[1].screenshot)).toEqual(['none', 'optional'])
+      await expect(observe.mock.results[0]?.value).resolves.toMatchObject({ stateHash: 'state-2' })
+      await expect(observe.mock.results[1]?.value).resolves.toMatchObject({
+        stateHash: 'state-2',
+        screenshot: { path: expect.any(String), width: 760, height: 592 },
+      })
+      expect(backend.actions).toHaveLength(1)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('does not dispatch a cancelled queued action or borrow the preceding action execution warning', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-cancel-queued-')
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    try {
+      const { backend, service } = serviceHarness()
+      await service.initializeForTest()
+      const firstContext = callContext(fakeAgent(workspace.path, 'first'), workspace.path)
+      const controller = new AbortController()
+      const queuedContext = { ...callContext(fakeAgent(workspace.path, 'queued'), workspace.path), signal: controller.signal }
+      const firstObservation = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, firstContext)
+      const queuedObservation = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, queuedContext)
+      const originalAct = backend.act.bind(backend)
+      const act = vi.spyOn(backend, 'act').mockImplementation(async request => {
+        entered.resolve()
+        await release.promise
+        return await originalAct(request)
+      })
+      const first = service.act({ kind: 'click', observationId: firstObservation.observationId, elementIndex: 1 }, firstContext)
+      await entered.promise
+      const queued = service.act({ kind: 'click', observationId: queuedObservation.observationId, elementIndex: 1 }, queuedContext)
+      const cancelled = expect(queued).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        message: expect.not.stringContaining('may already have executed'),
+      })
+      controller.abort()
+      release.resolve()
+      await Promise.all([expect(first).resolves.toMatchObject({ action: 'click' }), cancelled])
+      expect(act).toHaveBeenCalledOnce()
+      expect(backend.actions).toHaveLength(1)
+      expect(backend.cursorActions.map(entry => entry.phase)).toEqual(['before', 'after'])
+    } finally {
+      release.resolve()
+      await workspace.cleanup()
+    }
+  })
+
+  it.each(['AbortError', 'COMPUTER_CANCELLED', 'signal reason'] as const)(
+    'warns against retrying when the provider is cancelled in flight via %s',
+    async kind => {
+      const workspace = await temporaryDirectory('dsh-computer-cancel-provider-')
+      try {
+        const { backend, service } = serviceHarness()
+        await service.initializeForTest()
+        const controller = new AbortController()
+        const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+        const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+        const reason = kind === 'AbortError'
+          ? new DOMException('provider interrupted', 'AbortError')
+          : kind === 'COMPUTER_CANCELLED'
+            ? new ComputerUseError('COMPUTER_CANCELLED', 'provider interrupted')
+            : new Error('caller stopped the provider')
+        const originalAct = backend.act.bind(backend)
+        const act = vi.spyOn(backend, 'act').mockImplementation(async request => {
+          // Record actual input before rejecting, not merely a provider call.
+          await originalAct(request)
+          if (kind === 'signal reason') controller.abort(reason)
+          throw reason
+        })
+
+        const action = service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context)
+        await expect(action).rejects.toMatchObject({
+          code: 'COMPUTER_CANCELLED',
+          cause: reason,
+          message: expect.stringContaining('may already have executed'),
+        })
+        await expect(action).rejects.toThrow('observe the current state before retrying')
+        expect(act).toHaveBeenCalledOnce()
+        expect(backend.actions).toHaveLength(1)
+        expect(backend.observations).toHaveLength(1)
+        expect(backend.cursorActions.map(entry => entry.phase)).toEqual(['before', 'after'])
+        expect(backend.cursorSignals[1]?.aborted).toBe(false)
+      } finally {
+        await workspace.cleanup()
+      }
+    },
+  )
+
+  it.each(['settle', 'screenshot'] as const)(
+    'reports cancellation in the post-action %s observation after successful input, not provider failure',
+    async phase => {
+      const workspace = await temporaryDirectory('dsh-computer-cancel-post-observe-')
+      try {
+        const { backend, service } = serviceHarness()
+        await service.initializeForTest()
+        const controller = new AbortController()
+        const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+        const before = await service.observe({
+          app: { bundleId: FIXTURE_APP.bundleId },
+          screenshot: phase === 'screenshot' ? 'required' : 'none',
+        }, context)
+        const originalObserve = backend.observe.bind(backend)
+        const reason = new Error('post-action observation interrupted')
+        const observe = vi.spyOn(backend, 'observe').mockImplementation(async (app, options) => {
+          // Only the observation rejects: backend.act has returned successfully.
+          expect(backend.actions).toHaveLength(1)
+          if (phase === 'settle' || options.screenshot !== 'none') {
+            controller.abort(reason)
+            throw reason
+          }
+          return await originalObserve(app, options)
+        })
+        const act = vi.spyOn(backend, 'act')
+        const action = service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context)
+
+        await expect(action).rejects.toMatchObject({
+          code: 'COMPUTER_CANCELLED',
+          cause: reason,
+          message: expect.stringContaining('may already have executed'),
+        })
+        await expect(action).rejects.toThrow('observe the current state before retrying')
+        expect(act).toHaveBeenCalledOnce()
+        await expect(act.mock.results[0]?.value).resolves.toMatchObject({ channel: 'accessibility' })
+        expect(observe.mock.calls.map(call => call[1].screenshot)).toEqual(
+          phase === 'settle' ? ['none'] : ['none', 'optional'],
+        )
+        expect(backend.actions).toHaveLength(1)
+        expect(backend.cursorActions.map(entry => entry.phase)).toEqual(['before', 'after'])
+      } finally {
+        await workspace.cleanup()
+      }
+    },
+  )
+
+  it.each(['COMPUTER_TIMEOUT', 'COMPUTER_STALE_OBSERVATION', 'COMPUTER_PERMISSION_REQUIRED'] as const)(
+    'preserves provider %s rather than reclassifying a concurrent cancellation',
+    async code => {
+      const workspace = await temporaryDirectory('dsh-computer-cancel-classification-')
+      try {
+        const { backend, service } = serviceHarness()
+        await service.initializeForTest()
+        const controller = new AbortController()
+        const context = { ...callContext(fakeAgent(workspace.path), workspace.path), signal: controller.signal }
+        const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+        const failure = new ComputerUseError(code, 'provider correction')
+        const act = vi.spyOn(backend, 'act').mockImplementation(async () => {
+          controller.abort()
+          throw failure
+        })
+        await expect(service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context))
+          .rejects.toBe(failure)
+        expect(act).toHaveBeenCalledOnce()
+        expect(failure.message).not.toContain('may already have executed')
+      } finally {
+        await workspace.cleanup()
+      }
+    },
+  )
+
+  it('keeps a non-cancellation post-action observation error in the provider-failure category', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-post-observe-failure-')
+    try {
+      const { backend, service } = serviceHarness()
+      await service.initializeForTest()
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      const cause = new Error('observation unavailable')
+      vi.spyOn(backend, 'observe').mockRejectedValue(cause)
+      await expect(service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1 }, context))
+        .rejects.toMatchObject({ code: 'COMPUTER_PROVIDER_FAILURE', cause })
+      expect(context.signal.aborted).toBe(false)
+      expect(backend.actions).toHaveLength(1)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
   it('uses an independent bounded signal for cursor cleanup after cancellation', async () => {
     const workspace = await temporaryDirectory('dsh-computer-cursor-cancel-cleanup-')
     try {

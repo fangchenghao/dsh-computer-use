@@ -10,6 +10,12 @@ export declare class ComputerUseError extends Error {
      */
     constructor(code: ComputerUseErrorCode, message: string, options?: ErrorOptions);
 }
-/** Convert an unknown failure into the provider-failure category without leaking unbounded native text. */
-export declare function computerUseError(error: unknown, fallback: string): ComputerUseError;
+/** Context used when translating cancellation from an AbortSignal or native AbortError. */
+export interface ComputerUseErrorOptions {
+    signal?: AbortSignal;
+    /** The provider call may have emitted input before cancellation was observed. */
+    actionMayHaveExecuted?: boolean;
+}
+/** Convert an unknown failure into a stable model-visible category without leaking unbounded native text. */
+export declare function computerUseError(error: unknown, fallback: string, options?: ComputerUseErrorOptions): ComputerUseError;
 //# sourceMappingURL=errors.d.ts.map

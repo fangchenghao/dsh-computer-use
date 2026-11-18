@@ -40,6 +40,51 @@ interface HelperSuccess<T> {
 
 type HelperEnvelope<T> = HelperFailure | HelperSuccess<T>
 
+const HELPER_ERROR_CODES = new Set<ComputerUseErrorCode>([
+  'COMPUTER_UNSUPPORTED_PLATFORM',
+  'COMPUTER_PERMISSION_REQUIRED',
+  'COMPUTER_APP_NOT_FOUND',
+  'COMPUTER_STALE_OBSERVATION',
+  'COMPUTER_ELEMENT_UNAVAILABLE',
+  'COMPUTER_TARGET_UNAVAILABLE',
+  'COMPUTER_TARGET_AMBIGUOUS',
+  'COMPUTER_TARGET_LOW_CONFIDENCE',
+  'COMPUTER_TARGET_REBIND_REQUIRES_CONFIRMATION',
+  'COMPUTER_CONFIRMATION_REQUIRED',
+  'COMPUTER_ACTION_BLOCKED',
+  'COMPUTER_TIMEOUT',
+  'COMPUTER_CANCELLED',
+  'COMPUTER_PROVIDER_FAILURE',
+])
+
+function isHelperEnvelope<T>(value: unknown): value is HelperEnvelope<T> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (record.ok === true) return Object.prototype.hasOwnProperty.call(record, 'value')
+  if (record.ok !== false || typeof record.error !== 'object' || record.error === null || Array.isArray(record.error)) return false
+  const error = record.error as Record<string, unknown>
+  return typeof error.code === 'string' && HELPER_ERROR_CODES.has(error.code as ComputerUseErrorCode)
+    && typeof error.message === 'string'
+}
+
+function protocolDiagnostic(stderr: string): string {
+  const detail = stderr.trim().slice(0, 1000)
+  return detail.length === 0 ? '' : `; helper stderr: ${detail}`
+}
+
+function parseHelperEnvelope<T>(raw: string, stderr: string, invalidMessage: string): HelperEnvelope<T> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `${invalidMessage}${protocolDiagnostic(stderr)}`, { cause: error })
+  }
+  if (!isHelperEnvelope<T>(parsed)) {
+    throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `${invalidMessage.replace('invalid JSON', 'a malformed response envelope')}${protocolDiagnostic(stderr)}`)
+  }
+  return parsed
+}
+
 export interface PreparedNativeDrag<T> {
   readonly result: Promise<T>
   start(): Promise<void>
@@ -267,13 +312,12 @@ export class NativeHelperClient {
     if (outcome.exitCode !== 0 && stdout.trim().length === 0) {
       throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `native helper exited ${String(outcome.exitCode)}${stderr.trim().length === 0 ? '' : `: ${stderr.trim().slice(0, 1000)}`}`)
     }
-    let envelope: HelperEnvelope<T>
-    try {
-      envelope = JSON.parse(stdout) as HelperEnvelope<T>
-    } catch (error) {
-      throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', 'native helper returned invalid JSON', { cause: error })
-    }
+    const envelope = parseHelperEnvelope<T>(stdout, stderr, 'native helper returned invalid JSON')
     if (envelope.ok !== true) throw new ComputerUseError(envelope.error.code, envelope.error.message.slice(0, 1000))
+    // A success frame is not sufficient if the process crashed before exiting.
+    if (outcome.exitCode !== 0) {
+      throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `native helper exited ${String(outcome.exitCode)}${stderr.trim().length === 0 ? '' : `: ${stderr.trim().slice(0, 1000)}`}`)
+    }
     return envelope.value
   }
 
@@ -364,15 +408,15 @@ export class NativeHelperClient {
       try {
         const raw = await readLine(processAbort.signal)
         const outcome = await handle.done
-        let envelope: HelperEnvelope<T>
-        try {
-          envelope = JSON.parse(raw) as HelperEnvelope<T>
-        } catch (error) {
-          throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', 'native drag helper returned invalid JSON', { cause: error })
-        }
+        const stderr = collected(handle.collected.stderr)
+        const envelope = parseHelperEnvelope<T>(
+          raw,
+          stderr,
+          'native drag helper returned invalid JSON',
+        )
         if (envelope.ok !== true) throw new ComputerUseError(envelope.error.code, envelope.error.message.slice(0, 1000))
         if (outcome.exitCode !== 0) {
-          throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `native drag helper exited ${String(outcome.exitCode)}`)
+          throw new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `native drag helper exited ${String(outcome.exitCode)}${stderr.trim().length === 0 ? '' : `: ${stderr.trim().slice(0, 1000)}`}`)
         }
         if (signal.aborted) throw new ComputerUseError('COMPUTER_CANCELLED', 'native drag action was cancelled after safe mouse release')
         return envelope.value

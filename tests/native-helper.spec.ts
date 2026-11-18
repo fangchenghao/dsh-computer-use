@@ -128,10 +128,10 @@ function cursorHandle(options: CursorHandleOptions = {}) {
   return { handle, stdinLines, terminate, exit, respond }
 }
 
-function dragHandle() {
+function dragHandle(stderrText = '') {
   const stdinLines: string[] = []
   const stdout = new PassThrough()
-  const stderr = reader('')
+  const stderr = reader(stderrText)
   const completed = Promise.withResolvers<{ exitCode: number | null; signal: NodeJS.Signals | null }>()
   let exited = false
   const exit = (outcome: { exitCode: number | null; signal: NodeJS.Signals | null }): void => {
@@ -164,11 +164,14 @@ function dragHandle() {
     terminate,
     waitForExit: vi.fn(async () => { await completed.promise; return true }),
   }
-  const respond = (value: unknown): void => {
-    stdout.write(`${JSON.stringify({ ok: true, value })}\n`)
-    exit({ exitCode: 0, signal: null })
+  const respondRaw = (raw: string, exitCode: number | null = 0): void => {
+    stdout.write(`${raw}\n`)
+    exit({ exitCode, signal: exitCode === null ? 'SIGTERM' : null })
   }
-  return { handle, stdinLines, terminate, respond }
+  const respond = (value: unknown): void => {
+    respondRaw(JSON.stringify({ ok: true, value }))
+  }
+  return { handle, stdinLines, terminate, respond, respondRaw }
 }
 
 describe('native helper path selection', () => {
@@ -181,6 +184,149 @@ describe('native helper path selection', () => {
   it('keeps an explicit custom helper path', () => {
     const config = resolveConfig({ helper: { path: '  /custom/helper  ' } })
     expect(new NativeHelperClient({} as never, config).helperPath).toBe('/custom/helper')
+  })
+})
+
+describe.each(['invoke', 'prepareDrag'] as const)('%s response envelopes', method => {
+  const helperName = method === 'invoke' ? 'native helper' : 'native drag helper'
+
+  async function response(raw: string, stderr = '', exitCode: number | null = 0): Promise<unknown> {
+    const drag = method === 'prepareDrag' ? dragHandle(stderr) : undefined
+    const client = new NativeHelperClient({
+      subprocess: { spawn: () => drag?.handle ?? completedHandle(raw, stderr, exitCode) },
+    } as never, resolveConfig())
+    // These are protocol-only tests: no platform gate, executable, or native process is needed.
+    vi.spyOn(client, 'prepare').mockResolvedValue({ path: HELPER, version: 'fixture', sha256: 'fixture' })
+    const signal = new AbortController().signal
+    if (drag === undefined) return await client.invoke({ command: 'health' }, signal)
+    const execution = await client.prepareDrag({ command: 'act', request: { action: { kind: 'drag' } } }, signal, 1_000)
+    await execution.start()
+    expect(drag.stdinLines).toEqual([expect.any(String), 'START'])
+    drag.respondRaw(raw, exitCode)
+    return await execution.result
+  }
+
+  it.each([
+    { raw: '{not-json', exitCode: 0 },
+    { raw: '{not-json', exitCode: 2 },
+    { raw: '', exitCode: 0 },
+    { raw: '   ', exitCode: 0 },
+    { raw: '{"ok":true,"value":1} trailing garbage', exitCode: 0 },
+  ])('retains stderr and a SyntaxError for invalid JSON: $raw (exit $exitCode)', async ({ raw, exitCode }) => {
+    await expect(response(raw, ' \tfirst diagnostic\nsecond diagnostic\n ', exitCode)).rejects.toMatchObject({
+      name: 'ComputerUseError',
+      code: 'COMPUTER_PROVIDER_FAILURE',
+      message: `COMPUTER_PROVIDER_FAILURE: ${helperName} returned invalid JSON; helper stderr: first diagnostic\nsecond diagnostic`,
+      cause: expect.any(SyntaxError),
+    })
+  })
+
+  it.each([
+    'null',
+    '[]',
+    '"text"',
+    '0',
+    'true',
+    '{}',
+    '{"value":1}',
+    '{"ok":true}',
+    '{"ok":"true","value":1}',
+    '{"ok":1,"value":1}',
+    '{"ok":false}',
+    '{"ok":false,"error":null}',
+    '{"ok":false,"error":[]}',
+    '{"ok":false,"error":"failure"}',
+    '{"ok":false,"error":{}}',
+    '{"ok":false,"error":{"code":"UNKNOWN_CODE","message":"failure"}}',
+    '{"ok":false,"error":{"code":42,"message":"failure"}}',
+    '{"ok":false,"error":{"code":"COMPUTER_TIMEOUT"}}',
+    '{"ok":false,"error":{"code":"COMPUTER_TIMEOUT","message":null}}',
+    '{"ok":false,"error":{"code":"COMPUTER_TIMEOUT","message":42}}',
+    '{"ok":"false","error":{"code":"COMPUTER_TIMEOUT","message":"failure"}}',
+  ])('rejects a malformed envelope rather than leaking a TypeError or helper code: %s', async raw => {
+    await expect(response(raw, ' envelope diagnostic\n', 2)).rejects.toMatchObject({
+      name: 'ComputerUseError',
+      code: 'COMPUTER_PROVIDER_FAILURE',
+      message: `COMPUTER_PROVIDER_FAILURE: ${helperName} returned a malformed response envelope; helper stderr: envelope diagnostic`,
+    })
+  })
+
+  describe.each([
+    { raw: '{not-json', detail: 'returned invalid JSON' },
+    { raw: '{}', detail: 'returned a malformed response envelope' },
+  ])('$detail diagnostics', ({ raw, detail }) => {
+    it.each([999, 1000, 1001])('preserves at most 1000 stderr characters (input length %i)', async length => {
+      const diagnostic = `${'d'.repeat(length - 1)}!`
+      await expect(response(raw, ` \t${diagnostic}\n `)).rejects.toMatchObject({
+        code: 'COMPUTER_PROVIDER_FAILURE',
+        message: `COMPUTER_PROVIDER_FAILURE: ${helperName} ${detail}; helper stderr: ${diagnostic.slice(0, 1000)}`,
+      })
+    })
+
+    it.each(['', ' \t\r\n '])('omits the diagnostic suffix for empty stderr: %j', async stderr => {
+      await expect(response(raw, stderr)).rejects.toMatchObject({
+        code: 'COMPUTER_PROVIDER_FAILURE',
+        message: `COMPUTER_PROVIDER_FAILURE: ${helperName} ${detail}`,
+      })
+    })
+  })
+
+  it.each([
+    { value: null },
+    { value: false },
+    { value: 0 },
+    { value: '' },
+    { value: [] },
+    { value: {} },
+    { value: { channel: 'coordinates', nested: [1, null, false] } },
+  ])('accepts a legal success envelope with value $value despite stderr', async ({ value }) => {
+    await expect(response(`  ${JSON.stringify({ ok: true, value })}  `, 'nonfatal helper warning')).resolves.toEqual(value)
+  })
+
+  it.each([
+    'COMPUTER_UNSUPPORTED_PLATFORM',
+    'COMPUTER_PERMISSION_REQUIRED',
+    'COMPUTER_APP_NOT_FOUND',
+    'COMPUTER_STALE_OBSERVATION',
+    'COMPUTER_ELEMENT_UNAVAILABLE',
+    'COMPUTER_TARGET_UNAVAILABLE',
+    'COMPUTER_TARGET_AMBIGUOUS',
+    'COMPUTER_TARGET_LOW_CONFIDENCE',
+    'COMPUTER_TARGET_REBIND_REQUIRES_CONFIRMATION',
+    'COMPUTER_CONFIRMATION_REQUIRED',
+    'COMPUTER_ACTION_BLOCKED',
+    'COMPUTER_TIMEOUT',
+    'COMPUTER_CANCELLED',
+    'COMPUTER_PROVIDER_FAILURE',
+  ])('preserves legal error code %s over the nonzero exit and truncates its message', async code => {
+    const message = `${'m'.repeat(1000)}MUST_NOT_LEAK`
+    await expect(response(JSON.stringify({ ok: false, error: { code, message } }), 'stderr must not replace a legal error', 2)).rejects.toMatchObject({
+      name: 'ComputerUseError',
+      code,
+      message: `${code}: ${'m'.repeat(1000)}`,
+    })
+  })
+
+  it('preserves a legal failure with an empty message even on exit zero', async () => {
+    await expect(response('{"ok":false,"error":{"code":"COMPUTER_ACTION_BLOCKED","message":""}}')).rejects.toMatchObject({
+      code: 'COMPUTER_ACTION_BLOCKED',
+      message: 'COMPUTER_ACTION_BLOCKED: ',
+    })
+  })
+
+  it.each([2, null])('rejects a success envelope when the helper exits abnormally: %s', async exitCode => {
+    await expect(response('{"ok":true,"value":{"channel":"coordinates"}}', '', exitCode)).rejects.toMatchObject({
+      code: 'COMPUTER_PROVIDER_FAILURE',
+      message: `COMPUTER_PROVIDER_FAILURE: ${helperName} exited ${String(exitCode)}`,
+    })
+  })
+
+  it.each([2, null])('retains bounded stderr when a success envelope accompanies abnormal exit: %s', async exitCode => {
+    const diagnostic = `${'e'.repeat(1000)}MUST_NOT_LEAK`
+    await expect(response('{"ok":true,"value":null}', ` \t${diagnostic}\n `, exitCode)).rejects.toMatchObject({
+      code: 'COMPUTER_PROVIDER_FAILURE',
+      message: `COMPUTER_PROVIDER_FAILURE: ${helperName} exited ${String(exitCode)}: ${'e'.repeat(1000)}`,
+    })
   })
 })
 
@@ -417,21 +563,12 @@ describe.skipIf(process.platform !== 'darwin')('managed native helper', () => {
     }
   })
 
-  it('maps malformed envelopes, caller cancellation, and helper deadlines to stable errors', async () => {
+  it('maps caller cancellation and helper deadlines to stable errors', async () => {
     const temporary = await temporaryDirectory('dsh-computer-helper-protocol-')
     try {
       const executable = join(temporary.path, 'helper')
       await writeFile(executable, '#!/bin/sh\nexit 0\n')
       await chmod(executable, 0o755)
-
-      const malformed = new NativeHelperClient({
-        subprocess: { spawn: () => completedHandle('{not-json') },
-      } as never, resolveConfig({ helper: { path: executable } }))
-      await malformed.prepare(new AbortController().signal)
-      await expect(malformed.invoke({ command: 'health' }, new AbortController().signal)).rejects.toMatchObject({
-        code: 'COMPUTER_PROVIDER_FAILURE',
-        message: 'COMPUTER_PROVIDER_FAILURE: native helper returned invalid JSON',
-      })
 
       const cancelled = new NativeHelperClient({
         subprocess: { spawn: (spec: { signal?: AbortSignal }) => abortingHandle(spec.signal) },

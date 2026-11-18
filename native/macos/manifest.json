@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "helperVersion": "0.4.7",
-  "sourceSha256": "f00ca8f22afc1a1ce12e4bb61146c4e67df3ceb84664d21b7e8b87b3f14f4660",
+  "helperVersion": "0.4.8",
+  "sourceSha256": "95344e4dd16e177b2c7f06cef7339c89bac056f05ec954bd1e3ba56cf34c24b3",
   "binary": {
     "path": "bin/dsh-computer-use-helper",
-    "sha256": "79d296aa1ae78ade6acabf1b3445490256377a6afbfc77e4d1a771c5f63e298b",
+    "sha256": "966efff312e27b9d2b98cd2fb2550a893d9701662043d39b2ac41f16539d463a",
     "architectures": [
       "arm64",
       "x86_64"

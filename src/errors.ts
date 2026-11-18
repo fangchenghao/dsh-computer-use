@@ -31,9 +31,30 @@ export class ComputerUseError extends Error {
   }
 }
 
-/** Convert an unknown failure into the provider-failure category without leaking unbounded native text. */
-export function computerUseError(error: unknown, fallback: string): ComputerUseError {
-  if (error instanceof ComputerUseError) return error
+/** Context used when translating cancellation from an AbortSignal or native AbortError. */
+export interface ComputerUseErrorOptions {
+  signal?: AbortSignal
+  /** The provider call may have emitted input before cancellation was observed. */
+  actionMayHaveExecuted?: boolean
+}
+
+function isAbortError(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'AbortError') return true
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ABORT_ERR'
+}
+
+/** Convert an unknown failure into a stable model-visible category without leaking unbounded native text. */
+export function computerUseError(error: unknown, fallback: string, options: ComputerUseErrorOptions = {}): ComputerUseError {
+  const cancelled = error instanceof ComputerUseError
+    ? error.code === 'COMPUTER_CANCELLED'
+    : options.signal?.aborted === true || isAbortError(error)
+  if (error instanceof ComputerUseError && (!cancelled || options.actionMayHaveExecuted !== true)) return error
+  if (cancelled) {
+    const executed = options.actionMayHaveExecuted === true
+      ? '; the action may already have executed; observe the current state before retrying'
+      : ''
+    return new ComputerUseError('COMPUTER_CANCELLED', `${fallback} was cancelled${executed}`, { cause: error })
+  }
   const message = error instanceof Error ? error.message : String(error)
   return new ComputerUseError('COMPUTER_PROVIDER_FAILURE', `${fallback}: ${message.slice(0, 1000)}`, { cause: error })
 }

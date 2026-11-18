@@ -440,13 +440,21 @@ export class ComputerUseService extends Service {
   /** Execute one observation-bound action and always return a fresh post-action observation. */
   async act(action: ComputerActionRequest, context: ComputerUseContext): Promise<ComputerActionResult> {
     const signal = AbortSignal.any([context.signal, this.lifecycle.signal])
-    const stored = this.requireObservation(action.observationId, context.agent)
-    if (action.kind === 'wait') return await this.wait(stored, action, context, signal)
-    const normalized = normalizeActionCoordinates(action, stored.backend)
-    return await this.enqueueAction(stored.backend.app, async () => {
+    let actionMayHaveExecuted = false
+    try {
       signal.throwIfAborted()
-      return await this.actNow(normalized, context, signal)
-    })
+      const stored = this.requireObservation(action.observationId, context.agent)
+      if (action.kind === 'wait') return await this.wait(stored, action, context, signal)
+      const normalized = normalizeActionCoordinates(action, stored.backend)
+      return await this.enqueueAction(stored.backend.app, async () => {
+        signal.throwIfAborted()
+        return await this.actNow(normalized, context, signal, () => { actionMayHaveExecuted = true })
+      })
+    } catch (error) {
+      // Cancellation before input is different from cancellation while input
+      // or post-action observation is in flight: the latter is unsafe to retry.
+      throw computerUseError(error, `Computer Use ${action.kind}`, { signal, actionMayHaveExecuted })
+    }
   }
 
   /** Keep this service's actions for one process ordered through post-action observation. */
@@ -454,6 +462,7 @@ export class ComputerUseService extends Service {
     action: Exclude<ComputerActionRequest, { kind: 'wait' }>,
     context: ComputerUseContext,
     signal: AbortSignal,
+    markActionStarted: () => void,
   ): Promise<ComputerActionResult> {
     const stored = this.requireObservation(action.observationId, context.agent)
     const index = targetIndex(action)
@@ -580,7 +589,7 @@ export class ComputerUseService extends Service {
       try {
         beforeCursor = await this.backend.visualizeCursor(visualization, 'before', signal)
       } catch (error) {
-        throw computerUseError(error, 'the agent cursor could not be driven before the action')
+        throw computerUseError(error, 'the agent cursor could not be driven before the action', { signal })
       }
       recordCursor(beforeCursor)
       const intentionalBackground = beforeCursor.reasonCode === 'target-not-frontmost'
@@ -604,7 +613,11 @@ export class ComputerUseService extends Service {
       ...(actionObservation.window === undefined ? {} : { window: actionObservation.window }),
     }
     try {
+      // Pre-action awaits may resolve after cancellation; do not consume a
+      // one-use confirmation or dispatch input in that case.
+      signal.throwIfAborted()
       this.confirmations.consume(context.agent, stored.backend.app, action)
+      markActionStarted()
       if (cursorStarted && visualization?.kind === 'drag') {
         const tracked = await this.backend.actDragWithCursor(
           request,
@@ -619,8 +632,6 @@ export class ComputerUseService extends Service {
       if (cursorActivation === 'activated' && outcome.activation !== 'activated') {
         outcome = { ...outcome, activation: 'activated' }
       }
-    } catch (error) {
-      throw computerUseError(error, `Computer Use ${action.kind} failed`)
     } finally {
       if (cursorStarted && visualization !== undefined) {
         try {
@@ -644,6 +655,7 @@ export class ComputerUseService extends Service {
     let latest: BackendObservation | undefined
     let settled = false
     do {
+      signal.throwIfAborted()
       if (this.config.settleMs > 0) await delay(this.config.settleMs, undefined, { signal })
       latest = await this.backend.observe(stored.backend.app, {
         screenshot: 'none',
@@ -651,6 +663,7 @@ export class ComputerUseService extends Service {
         maxDepth: this.config.maxDepth,
         maxTextBytes: this.config.maxTextBytes,
       }, signal)
+      signal.throwIfAborted()
       if (latest.stateHash !== actionObservation.stateHash) { settled = true; break }
     } while (Date.now() - started < this.config.maxSettleMs)
     const observation = await this.capture(
@@ -660,6 +673,7 @@ export class ComputerUseService extends Service {
       'computer_action',
       latest,
     )
+    signal.throwIfAborted()
     return {
       action: action.kind,
       channel: outcome.channel,
