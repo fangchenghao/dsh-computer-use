@@ -68,10 +68,14 @@ interface FixtureTranscript {
   checked: boolean
   status: string
   activationCount: number
+  nativeButtonCount: number
+  webButtonCount: number
+  returnKeyCount: number
   pointerClickCount: number
   pointerScrollCount: number
   pointerDragCount: number
   pointerMouseDownCount: number
+  mouseDownEvents: number[][]
   pointerMouseUpCount: number
   pointerDragGestureCount: number
 }
@@ -182,11 +186,11 @@ async function terminateFixtures(): Promise<void> {
   while ((await fixtureApps()).length > 0 && Date.now() < deadline) await delay(50)
 }
 
-async function launchFixture(transcript: string, reorderTrigger?: string): Promise<{ bundleId: string; pid: number; name: string }> {
+async function launchFixture(transcript: string, ...fixtureArgs: string[]): Promise<{ bundleId: string; pid: number; name: string }> {
   const launched = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
     const child = spawn('open', [
       '-g', '-n', FIXTURE_APP, '--args', '--background', '--transcript', transcript,
-      ...(reorderTrigger === undefined ? [] : ['--reorder-trigger', reorderTrigger]),
+      ...fixtureArgs,
     ], {
       stdio: ['ignore', 'ignore', 'pipe'],
     })
@@ -766,7 +770,7 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
     const reorderTrigger = join(temporary.path, 'reorder.trigger')
     let app: NativeObservation['app'] | undefined
     try {
-      app = await launchFixture(transcriptPath, reorderTrigger)
+      app = await launchFixture(transcriptPath, '--reorder-trigger', reorderTrigger)
       const original = await stableObserve(app, observation => !observation.frontmost)
       const checkbox = findElement(original, element => element.label === 'Enable deterministic option')
       expect(checkbox.nativeIdentifier).toBe('fixture.checkbox')
@@ -862,7 +866,7 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
     }
   }, 30000)
 
-  it('activates the target application for reliable keyboard input when keyboardPolicy is activate', async (testContext) => {
+  it.for([false, true])('revalidates the activated window before keyboard input (switch window: %s)', async (switchWindow, testContext) => {
     const health = await invoke<{ accessibility: string }>({ command: 'health' })
     if (health.accessibility !== 'granted') {
       if (process.env.DSH_COMPUTER_USE_REQUIRE_TCC === '1') {
@@ -877,10 +881,18 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
     const transcriptPath = join(temporary.path, 'transcript.json')
     let app: NativeObservation['app'] | undefined
     try {
-      app = await launchFixture(transcriptPath)
+      app = await launchFixture(transcriptPath, ...(switchWindow ? ['--switch-window-on-activation'] : []))
       const current = await stableObserve(app, observation => !observation.frontmost)
-      const result = await act(current, { kind: 'press-key', key: 'return', modifiers: [] }, undefined, ACTIVATE_KEYBOARD_INTERACTION)
-      expect(result).toEqual({
+      expect(current.window.title).toBe('DSH Computer Use Fixture')
+      expect((await fixtureTranscript(transcriptPath)).activationCount).toBe(0)
+      const key = act(current, { kind: 'press-key', key: 'return', modifiers: [] }, undefined, ACTIVATE_KEYBOARD_INTERACTION)
+      if (switchWindow) {
+        await expect(key).rejects.toThrow(/COMPUTER_STALE_OBSERVATION.*selected window changed/)
+        expect((await observe(app)).window.title).toBe('Second fixture document')
+        expect((await fixtureTranscript(transcriptPath)).returnKeyCount).toBe(0)
+        return
+      }
+      await expect(key).resolves.toEqual({
         channel: 'keyboard',
         activation: 'activated',
         pointerInput: false,
@@ -889,6 +901,7 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
       await waitForText(app, 'Status: applied')
       const transcript = await fixtureTranscript(transcriptPath)
       expect(transcript.activationCount).toBeGreaterThan(0)
+      await expect.poll(async () => (await fixtureTranscript(transcriptPath)).returnKeyCount, { timeout: 3000 }).toBe(1)
     } finally {
       if (app !== undefined) {
         try { process.kill(app.pid, 'SIGKILL') } catch {}
@@ -898,7 +911,7 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
     }
   }, 30000)
 
-  it('rejects disabled target-process pointer paths while retaining non-activating Accessibility input', async (testContext) => {
+  it('enforces pointer policy and delivers each requested click gesture once', async (testContext) => {
     const health = await invoke<{ accessibility: string }>({ command: 'health' })
     if (health.accessibility !== 'granted') {
       if (process.env.DSH_COMPUTER_USE_REQUIRE_TCC === '1') {
@@ -913,9 +926,31 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
     const transcriptPath = join(temporary.path, 'transcript.json')
     let app: NativeObservation['app'] | undefined
     try {
-      app = await launchFixture(transcriptPath)
+      app = await launchFixture(transcriptPath, '--web-area-sibling')
       let current = await stableObserve(app, observation => !observation.frontmost)
+      expect(current.elements.some(element => element.role === 'AXWebArea')).toBe(true)
+      // These counters are visible only in the fixture transcript.
+      for (const count of [1, 2]) {
+        const apply = findElement(current, element => element.role === 'AXButton' && element.label?.includes('Apply') === true)
+        expect(apply.focused).not.toBe(true)
+        await expect(act(current, { kind: 'click', elementIndex: apply.index, allowCoordinateFallback: true }, apply))
+          .resolves.toMatchObject({ channel: 'accessibility', pointerInput: false })
+        await expect.poll(async () => (await fixtureTranscript(transcriptPath)).nativeButtonCount).toBe(count)
+        current = await observe(app)
+      }
       const checkbox = findElement(current, element => element.label === 'Enable deterministic option')
+      const click = { kind: 'click', elementIndex: checkbox.index }
+      for (const clickCount of [0, 4, 1.5, true]) {
+        await expect(act(current, { ...click, clickCount }, checkbox, TARGETED_INTERACTION))
+          .rejects.toThrow(/COMPUTER_ACTION_BLOCKED.*clickCount/)
+      }
+      await expect(act(current, { ...click, button: 'right', allowCoordinateFallback: true }, checkbox, PRESERVE_INTERACTION))
+        .rejects.toThrow(/COMPUTER_ACTION_BLOCKED/)
+      await expect(act(current, { ...click, clickCount: 2 }, checkbox, PRESERVE_INTERACTION))
+        .rejects.toThrow(/COMPUTER_ACTION_BLOCKED/)
+      await expect(act(current, { ...click, button: 'middle' }, checkbox, TARGETED_INTERACTION))
+        .rejects.toThrow(/COMPUTER_ELEMENT_UNAVAILABLE.*allowCoordinateFallback/)
+      expect(await fixtureTranscript(transcriptPath)).toMatchObject({ checked: false, mouseDownEvents: [] })
       await expect(act(current, { kind: 'click', elementIndex: checkbox.index }, checkbox, PRESERVE_INTERACTION)).resolves.toEqual({
         channel: 'accessibility',
         activation: 'not-requested',
@@ -944,6 +979,36 @@ describe.skipIf(process.platform !== 'darwin')('real macOS Computer Use fixture'
         pointerMouseUpCount: 0,
         pointerDragGestureCount: 0,
       })
+
+      const expectedDowns: number[][] = []
+      for (const [button, number, clickCount] of [
+        ['right', 1, 1], ['middle', 2, 1], [undefined, 0, 2], ['left', 0, 3],
+      ] as const) {
+        current = await observe(app)
+        const target = findElement(current, element => element.label === 'Enable deterministic option')
+        await expect(act(current, {
+          kind: 'click', elementIndex: target.index, button, clickCount, allowCoordinateFallback: true,
+        }, target, TARGETED_INTERACTION)).resolves.toMatchObject({ channel: 'coordinates', pointerRouting: 'target-process' })
+        for (let count = 1; count <= clickCount; count++) expectedDowns.push([number, count])
+        await expect.poll(async () => (await fixtureTranscript(transcriptPath)).mouseDownEvents).toEqual(expectedDowns)
+      }
+
+      current = await observe(app)
+      const area = findElement(current, element => element.role === 'AXWebArea')
+      const webButton = findElement(current, element => element.label === 'Web fixture button')
+      expect(webButton.locator.slice(0, area.locator.length)).toEqual(area.locator)
+      await expect(act(current, { kind: 'click', elementIndex: webButton.index, x, y }, webButton))
+        .resolves.toMatchObject({ channel: 'coordinates' })
+      await expect.poll(async () => (await fixtureTranscript(transcriptPath)).webButtonCount).toBe(1)
+
+      for (const [label, count] of [['Enable deterministic option', 2], ['Web fixture button', 4]] as const) {
+        current = await observe(app)
+        const target = findElement(current, element => element.label === label)
+        await expect(act(current, {
+          kind: 'click', elementIndex: target.index, x, y, clickCount: 2, allowCoordinateFallback: true,
+        }, target)).resolves.toMatchObject({ channel: 'coordinates' })
+        await expect.poll(async () => (await fixtureTranscript(transcriptPath)).pointerClickCount).toBe(count)
+      }
     } finally {
       if (app !== undefined) {
         try { process.kill(app.pid, 'SIGKILL') } catch {}

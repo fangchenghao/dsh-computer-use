@@ -14,7 +14,7 @@ import {
 import type { ComputerUseService } from './service.ts'
 
 function renderJson(_args: unknown, value: unknown): ContentBlock[] {
-  return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
+  return [{ type: 'text', text: JSON.stringify(value) }]
 }
 
 function contextOf(exec: ToolRunContext): ComputerUseContext {
@@ -206,6 +206,12 @@ const keyNames = [
   'escape', 'home', 'pageup', 'forwarddelete', 'end', 'pagedown', 'left', 'right', 'down', 'up',
 ] as const
 
+const clickGestureParameters = {
+  button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Defaults to left. Right and middle clicks require targeted pointer input.' },
+  clickCount: { type: 'integer', enum: [1, 2, 3], description: 'Number of clicks. Defaults to 1. Double and triple clicks require targeted pointer input.' },
+  allowCoordinateFallback: { type: 'boolean', description: 'Allow clicking a native element at its center when AXPress is unavailable for the requested gesture. Right, middle, double, and triple clicks use explicit x and y when supplied.' },
+} as const
+
 const confirmationActionSchema = {
   oneOf: [
     {
@@ -218,9 +224,7 @@ const confirmationActionSchema = {
         x: { type: 'number' },
         y: { type: 'number' },
         coordinateSpace: { type: 'string', enum: ['window', 'screen', 'screenshot'] },
-        button: { type: 'string', enum: ['left', 'right', 'middle'] },
-        clickCount: { type: 'integer' },
-        allowCoordinateFallback: { type: 'boolean' },
+        ...clickGestureParameters,
       },
     },
     {
@@ -386,9 +390,7 @@ export function createComputerUseTools(service: ComputerUseService): ToolDefinit
       x: { type: 'number' },
       y: { type: 'number' },
       coordinateSpace: { type: 'string', enum: ['window', 'screen', 'screenshot'], description: 'Default window interprets x/y in points inside the observed window frame; screen uses Quartz screen-global points; screenshot interprets x/y in the observation screenshot pixels, which is what you read off the screenshot image on a Retina display.' },
-      button: { type: 'string', enum: ['left', 'right', 'middle'] },
-      clickCount: { type: 'integer' },
-      allowCoordinateFallback: { type: 'boolean' },
+      ...clickGestureParameters,
       ...sensitiveParameters,
     },
     output: actionOutput(),

@@ -71,6 +71,7 @@ export declare class ComputerUseUpdater {
     private state;
     private timer;
     private intervalTimer;
+    private scheduleGeneration;
     private running;
     /** Whether start() armed the background schedule, so configure() can re-arm it. */
     private started;

@@ -108,6 +108,18 @@ describe('provider-independent target resolver', () => {
     })
   })
 
+  it('does not rebind a handle to a same-label replacement with a conflicting native identifier', () => {
+    const selected = target({ nativeIdentifier: 'document-a.open' })
+    const original = observation([selected])
+    const descriptor = describeComputerTarget(selected, original)
+    const replacement = observation([target({ nativeIdentifier: 'document-b.open' })])
+    expect(() => resolveComputerTarget(original, replacement, descriptor, true))
+      .toThrow(expect.objectContaining({ code: 'COMPUTER_TARGET_LOW_CONFIDENCE' }))
+
+    const withoutIdentifiers = observation([target({ locator: [1] })])
+    expect(resolveComputerTarget(original, withoutIdentifiers, descriptor, true).resolution.mode).toBe('semantic-rebind')
+  })
+
   it('fails as ambiguous for duplicate labels under the same ancestor', () => {
     const root = target({ index: 0, locator: [], role: 'AXWindow', title: 'Fixture', label: 'Fixture', actions: [] })
     const originalTarget = target({ index: 1, locator: [0] })

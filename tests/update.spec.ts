@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   ComputerUseUpdater,
   compareVersions,
@@ -265,5 +265,60 @@ describe('update check and self-update', () => {
     updater.configure({ autoUpdate: false })
     updater.dispose()
     expect(updater.status().installing).toBe(false)
+  })
+
+  it.each(['disable', 'disable then re-enable', 'dispose'])('drops a pending automatic install after %s', async change => {
+    const { profile } = await temporaryProfile()
+    const registry = Promise.withResolvers<Response>()
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      fetchImpl: async () => (await registry.promise).clone(),
+    })
+    const install = vi.spyOn(updater, 'update').mockResolvedValue(updater.status())
+    const timer = vi.spyOn(globalThis, 'setInterval')
+    try {
+      updater.start()
+      const pending = timer.mock.lastCall![0]()
+      if (change === 'dispose') updater.dispose()
+      else updater.configure({ autoUpdate: false })
+      if (change === 'disable then re-enable') updater.configure({ autoUpdate: true })
+      registry.resolve(Response.json({ version: '0.4.1' }))
+      await pending
+      expect(install).not.toHaveBeenCalled()
+      if (change === 'disable then re-enable') {
+        await timer.mock.lastCall![0]()
+        expect(install).toHaveBeenCalledExactlyOnceWith('0.4.1')
+      }
+    } finally {
+      updater.dispose()
+      timer.mockRestore()
+    }
+  })
+
+  it('does not auto-install a cached version after the registry check fails', async () => {
+    const { profile } = await temporaryProfile()
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ version: '0.4.1' }))
+      .mockRejectedValueOnce(new Error('offline'))
+    const updater = new ComputerUseUpdater({
+      packageName: '@fffangchenghao/dsh-computer-use',
+      currentVersion: '0.4.0',
+      profileDir: profile,
+      fetchImpl,
+    })
+    expect((await updater.check()).available).toBe(true)
+    const install = vi.spyOn(updater, 'update').mockResolvedValue(updater.status())
+    const timer = vi.spyOn(globalThis, 'setInterval')
+    try {
+      updater.start()
+      await timer.mock.lastCall![0]()
+      expect(updater.status().error).toContain('offline')
+      expect(install).not.toHaveBeenCalled()
+    } finally {
+      updater.dispose()
+      timer.mockRestore()
+    }
   })
 })

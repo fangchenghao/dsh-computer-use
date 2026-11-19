@@ -886,6 +886,7 @@ describe('Computer Use Service', () => {
       const target = before.elements.find(element => element.title === 'Apply')!
       expect(target.targetHandle).toEqual(expect.any(String))
       expect(target).not.toHaveProperty('nativeIdentifier')
+      target.actions.length = 0
       backend.observation = backendObservation({
         stateHash: 'state-reordered',
         elements: [
@@ -894,6 +895,8 @@ describe('Computer Use Service', () => {
           { ...backend.observation.elements[1]!, index: 2, locator: [1] },
         ],
       })
+      // Resolve the older handle even after the more recent tree has been published.
+      await service.observe({ app: FIXTURE_APP, screenshot: 'none' }, context)
 
       await expect(service.act({
         kind: 'click',
@@ -1043,6 +1046,14 @@ describe('Computer Use Service', () => {
       elementIndex: 0,
       allowCoordinateFallback: true,
     })],
+    ...(['right', 'middle'] as const).map(button => [
+      `${button} element click`,
+      (observationId: ComputerObservationId) => ({ kind: 'click' as const, observationId, elementIndex: 1, button }),
+    ] as const),
+    ...([2, 3] as const).map(clickCount => [
+      `element click with count ${clickCount}`,
+      (observationId: ComputerObservationId) => ({ kind: 'click' as const, observationId, elementIndex: 1, clickCount }),
+    ] as const),
     ['scroll', (observationId: ComputerObservationId) => ({
       kind: 'scroll' as const,
       observationId,
@@ -1079,6 +1090,46 @@ describe('Computer Use Service', () => {
       })
       expect(request).not.toHaveBeenCalled()
       expect(backend.actions).toHaveLength(0)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('rejects invalid click counts before asking for approval, moving a cursor, or sending input', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-click-count-')
+    try {
+      const { backend, request, service } = serviceHarness()
+      await service.initializeForTest()
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const observation = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      request.mockClear()
+      for (const clickCount of [-1, 0, 1.5, 4]) {
+        const action = { kind: 'click' as const, observationId: observation.observationId, elementIndex: 1, clickCount, sensitive: true }
+        const error = { code: 'COMPUTER_ACTION_BLOCKED', message: expect.stringContaining('clickCount') }
+        await expect(service.confirm({ action, reason: 'Test click count', target: 'Apply' }, context)).rejects.toMatchObject(error)
+        await expect(service.act(action, context)).rejects.toMatchObject(error)
+      }
+      expect(request).not.toHaveBeenCalled()
+      expect(backend.cursorActions).toHaveLength(0)
+      expect(backend.actions).toHaveLength(0)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it.each([
+    ['right click', { button: 'right' as const }, { x: 110, y: 220 }],
+    ['double click with element fallback', { clickCount: 2, allowCoordinateFallback: true }, { x: 110, y: 220 }],
+    ['single left click', { button: 'left' as const, allowCoordinateFallback: true }, { x: 260, y: 334 }],
+  ] as const)('places the cursor at the input target for a mixed element and point %s', async (_name, gesture, point) => {
+    const workspace = await temporaryDirectory('dsh-computer-click-point-')
+    try {
+      const { backend, service } = serviceHarness()
+      await service.initializeForTest()
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const before = await service.observe({ app: { bundleId: FIXTURE_APP.bundleId }, screenshot: 'none' }, context)
+      await service.act({ kind: 'click', observationId: before.observationId, elementIndex: 1, x: 10, y: 20, ...gesture }, context)
+      expect(backend.cursorActions.map(entry => entry.action)).toMatchObject([{ to: point }, { to: point }])
     } finally {
       await workspace.cleanup()
     }
@@ -1273,6 +1324,201 @@ describe('Computer Use Service', () => {
     } finally {
       await workspace.cleanup()
     }
+  })
+
+  it.each(['observe', 'wait'] as const)('discards a late %s screenshot after its provider is replaced', async kind => {
+    const workspace = await temporaryDirectory('dsh-computer-generation-capture-')
+    try {
+      const { service, backend } = serviceHarness({ maxSettleMs: 5000 })
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const request = { app: FIXTURE_APP, screenshot: 'required' as const }
+      const initial = kind === 'wait' ? await service.observe(request, context) : undefined
+      const captured = Promise.withResolvers<string>()
+      const finish = Promise.withResolvers<void>()
+      const observe = backend.observe.bind(backend)
+      vi.spyOn(backend, 'observe').mockImplementationOnce(async (app, options) => {
+        const snapshot = await observe(app, options)
+        if (snapshot.screenshot === undefined) throw new Error('expected a captured fixture screenshot')
+        captured.resolve(snapshot.screenshot.path)
+        await finish.promise
+        return snapshot
+      })
+      const pending = initial === undefined
+        ? service.observe(request, context)
+        : service.act({ kind: 'wait', observationId: initial.observationId, condition: { elementTitle: 'Apply' } }, context)
+      const capturedPath = await captured.promise
+      const replacement = new FakeBackend()
+      replacement.observation.treeText = 'replacement window'
+      await service.reconfigureForTest(replacement, { allowAllApps: true })
+      finish.resolve()
+
+      await expect(pending).rejects.toMatchObject({ code: 'COMPUTER_CANCELLED' })
+      expect(replacement.observations).toHaveLength(0)
+      expect(await readdir(dirname(capturedPath))).toEqual(initial?.screenshot ? [initial.screenshot.filename] : [])
+      const fresh = await service.observe({ app: FIXTURE_APP, screenshot: 'none' }, context)
+      expect(fresh.tree).toMatchObject({ mode: 'full', text: 'replacement window' })
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('discards a late control approval before dispatch and asks again under the replacement', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-generation-approval-')
+    try {
+      const config = { settleMs: 0, grants: [{ bundleId: FIXTURE_APP.bundleId, read: true, control: false }] }
+      const { service, backend, request } = serviceHarness(config)
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const observe = { app: FIXTURE_APP, screenshot: 'none' as const }
+      const original = await service.observe(observe, context)
+      const asked = Promise.withResolvers<void>()
+      const decision = Promise.withResolvers<ApprovalOutcome>()
+      request.mockImplementationOnce(() => { asked.resolve(); return decision.promise })
+      const pending = service.act({ kind: 'click', observationId: original.observationId, elementIndex: 1 }, context)
+      await asked.promise
+      const replacement = new FakeBackend()
+      await service.reconfigureForTest(replacement, config)
+      decision.resolve('allowed-once')
+
+      await expect(pending).rejects.toMatchObject({
+        code: 'COMPUTER_CANCELLED',
+        message: expect.not.stringContaining('may already have executed'),
+      })
+      expect(backend.actions).toHaveLength(0)
+      expect(replacement.actions).toHaveLength(0)
+      expect(replacement.cursorActions).toHaveLength(0)
+      expect(replacement.observations).toHaveLength(0)
+      const fresh = await service.observe(observe, context)
+      await service.act({ kind: 'click', observationId: fresh.observationId, elementIndex: 1 }, context)
+      expect(request).toHaveBeenCalledTimes(2)
+      expect(replacement.actions).toHaveLength(1)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('warns only for dispatched input and keeps queued work and cursor cleanup off the replacement', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-generation-dispatch-')
+    try {
+      const { service, backend } = serviceHarness()
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const first = await service.observe({ app: FIXTURE_APP, screenshot: 'none' }, context)
+      const started = Promise.withResolvers<void>()
+      const finish = Promise.withResolvers<void>()
+      const act = backend.act.bind(backend)
+      vi.spyOn(backend, 'act').mockImplementationOnce(async request => {
+        const result = await act(request)
+        started.resolve()
+        await finish.promise
+        return result
+      })
+      const click = { kind: 'click' as const, observationId: first.observationId, elementIndex: 1 }
+      const inFlight = service.act(click, context)
+      await started.promise
+      const queued = service.act(click, context)
+      const replacement = new FakeBackend()
+      await service.reconfigureForTest(replacement, {})
+      finish.resolve()
+      await Promise.all([
+        expect(inFlight).rejects.toMatchObject({
+          code: 'COMPUTER_CANCELLED',
+          message: expect.stringContaining('may already have executed'),
+        }),
+        expect(queued).rejects.toMatchObject({
+          code: 'COMPUTER_CANCELLED',
+          message: expect.not.stringContaining('may already have executed'),
+        }),
+      ])
+      expect(backend.actions).toHaveLength(1)
+      expect(replacement.actions).toHaveLength(0)
+      expect(replacement.cursorActions).toHaveLength(0)
+      expect(replacement.observations).toHaveLength(0)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('cancels late sensitive approvals when their Agent is disposed', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-agent-confirm-')
+    try {
+      const { service, request } = serviceHarness()
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const before = await service.observe({ app: FIXTURE_APP, screenshot: 'none' }, context)
+      const asked = Promise.withResolvers<void>()
+      const decision = Promise.withResolvers<ApprovalOutcome>()
+      request.mockImplementationOnce(() => { asked.resolve(); return decision.promise })
+      const action = { kind: 'click' as const, observationId: before.observationId, elementIndex: 1, sensitive: true }
+      const pending = service.confirm({ action, reason: 'Apply the fixture change', target: 'Apply button' }, context)
+      await asked.promise
+      service.releaseAgent(context.agent)
+      decision.resolve('allowed-once')
+
+      await expect(pending).rejects.toMatchObject({ code: 'COMPUTER_CANCELLED' })
+      await expect(service.act(action, context)).rejects.toMatchObject({ code: 'COMPUTER_STALE_OBSERVATION' })
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('applies overlapping Settings in submission order and ignores a late health result from the old backend', async () => {
+    const { service, backend } = serviceHarness()
+    const healthStarted = Promise.withResolvers<void>()
+    const finishHealth = Promise.withResolvers<void>()
+    vi.spyOn(backend, 'health').mockImplementationOnce(async () => {
+      healthStarted.resolve()
+      await finishHealth.promise
+      return backend.healthValue
+    })
+    const health = service.health(new AbortController().signal)
+    await healthStarted.promise
+
+    const first = new FakeBackend()
+    const firstStarted = Promise.withResolvers<void>()
+    const finishFirst = Promise.withResolvers<void>()
+    vi.spyOn(first, 'health').mockImplementationOnce(async () => {
+      firstStarted.resolve()
+      await finishFirst.promise
+      return first.healthValue
+    })
+    const last = new FakeBackend()
+    last.healthValue.helperVersion = 'last-settings'
+    const checkLast = vi.spyOn(last, 'health')
+    const firstUpdate = service.reconfigureForTest(first, {})
+    await firstStarted.promise
+    const lastUpdate = service.reconfigureForTest(last, {})
+    await Promise.resolve()
+    expect(checkLast).not.toHaveBeenCalled()
+    finishFirst.resolve()
+    await Promise.all([firstUpdate, lastUpdate])
+    finishHealth.resolve()
+
+    await expect(health).rejects.toMatchObject({ code: 'COMPUTER_CANCELLED' })
+    expect(service.status()).toMatchObject({ generation: 3, helperVersion: 'last-settings', ready: true })
+    expect(backend.disposed).toBe(true)
+    expect(first.disposed).toBe(true)
+    expect(last.disposed).toBe(false)
+  })
+
+  it('keeps failed candidates with their owner and accepts a healthy replacement even if retired cleanup fails', async () => {
+    const { service, backend } = serviceHarness()
+    const broken = new FakeBackend()
+    const failure = new Error('candidate could not start')
+    vi.spyOn(broken, 'health').mockRejectedValue(failure)
+    const releaseCandidate = vi.spyOn(broken, 'dispose')
+    const releaseActive = vi.spyOn(backend, 'dispose').mockRejectedValue(new Error('retired backend cleanup failed'))
+
+    await expect(service.reconfigureForTest(broken, {})).rejects.toBe(failure)
+    expect(service.status().generation).toBe(1)
+    expect(releaseCandidate).not.toHaveBeenCalled()
+    expect(releaseActive).not.toHaveBeenCalled()
+
+    const healthy = new FakeBackend()
+    healthy.healthValue.helperVersion = 'replacement'
+    await expect(service.reconfigureForTest(healthy, {})).resolves.toBeUndefined()
+    expect(releaseActive).toHaveBeenCalledOnce()
+    expect(healthy.disposed).toBe(false)
+    expect(await service.health(new AbortController().signal)).toMatchObject({
+      generation: 2, helperVersion: 'replacement', ready: true,
+    })
   })
 
   it('persists read leases for the Session and control leases for the current turn', async () => {
@@ -1581,8 +1827,8 @@ describe('Computer Use Service', () => {
     vi.spyOn(backend, 'observe').mockResolvedValue(backendObservation({ elements }))
     const observed = await service.observe({ app: FIXTURE_APP, screenshot: 'none' }, context)
     expect(new Set(observed.elements.map(element => element.targetHandle)).size).toBe(elements.length)
-    // Count work instead of timing the host. Reindexing for every row costs N² reads.
-    expect(reads).toBeLessThan(elements.length * 12)
+    // Publishing handles can strip locators once per row. Ancestor indexing starts on use.
+    expect(reads).toBeLessThanOrEqual(elements.length)
   })
 
   it('marks a clipped diff even when both source trees fit the byte limit', async () => {

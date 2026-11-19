@@ -188,6 +188,7 @@ export class ComputerUseUpdater {
   private state: UpdateStatus
   private timer: NodeJS.Timeout | undefined
   private intervalTimer: NodeJS.Timeout | undefined
+  private scheduleGeneration = 0
   private running = false
   /** Whether start() armed the background schedule, so configure() can re-arm it. */
   private started = false
@@ -233,8 +234,8 @@ export class ComputerUseUpdater {
     this.log('info', this.options.autoUpdate === false
       ? 'automatic update is now disabled by configuration'
       : `automatic update will now check every ${this.options.intervalHours ?? 24} hour(s)`)
-    this.clearTimers()
     if (this.started && this.options.autoUpdate !== false) this.armTimers()
+    else this.clearTimers()
   }
 
   /** Start the background check; the first check runs shortly after plugin startup. */
@@ -249,14 +250,12 @@ export class ComputerUseUpdater {
 
   private armTimers(): void {
     this.clearTimers()
-    this.timer = setTimeout(() => {
-      void this.runScheduledCheck()
-    }, 5_000)
+    const generation = this.scheduleGeneration
+    const check = () => this.runScheduledCheck(generation)
+    this.timer = setTimeout(check, 5_000)
     this.timer.unref?.()
     const interval = (this.options.intervalHours ?? 24) * 60 * 60 * 1000
-    this.intervalTimer = setInterval(() => {
-      void this.runScheduledCheck()
-    }, interval)
+    this.intervalTimer = setInterval(check, interval)
     this.intervalTimer.unref?.()
   }
 
@@ -267,6 +266,7 @@ export class ComputerUseUpdater {
   }
 
   private clearTimers(): void {
+    ++this.scheduleGeneration
     if (this.timer !== undefined) clearTimeout(this.timer)
     if (this.intervalTimer !== undefined) clearInterval(this.intervalTimer)
     this.timer = undefined
@@ -422,11 +422,11 @@ export class ComputerUseUpdater {
     }
   }
 
-  private async runScheduledCheck(): Promise<void> {
+  private async runScheduledCheck(generation: number): Promise<void> {
     const status = await this.check()
-    if (!status.available || status.latest === undefined) return
+    if (status.error !== undefined || !status.available || status.latest === undefined) return
     const state = await this.readState()
-    if (state.updatedTo === status.latest) return
+    if (generation !== this.scheduleGeneration || state.updatedTo === status.latest) return
     if (state.failedVersion === status.latest && state.failedAt !== undefined
       && this.now() - state.failedAt < RETRY_BACKOFF_MS) {
       this.log('info', `skipping retry of ${status.latest} after a recent failure`)

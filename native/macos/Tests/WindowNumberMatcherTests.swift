@@ -69,6 +69,40 @@ private enum WindowNumberMatcherTests {
             "plain lexical prefix is not window identity evidence"
         )
 
-        print("PASS WindowNumberMatcherTests (5 cases)")
+        let frame = CGRect(x: 40, y: 60, width: 500, height: 350)
+        let sameFrameWindows = [
+            WindowNumberCandidate(number: 601, title: "Document", frame: frame),
+            WindowNumberCandidate(number: 602, title: "Document", frame: frame),
+        ]
+        expectEqual(
+            matchedWindowNumber(candidates: sameFrameWindows, observedTitle: "Document", observedFrame: frame),
+            nil,
+            "a screenshot cannot choose between same-size overlapping documents with the same title"
+        )
+        expectEqual(
+            matchedWindowNumber(candidates: sameFrameWindows, observedTitle: "Document", observedFrame: frame, observedNumber: 602),
+            602,
+            "the observed id disambiguates overlapping documents"
+        )
+        let moved = WindowNumberCandidate(number: 602, title: "Document", frame: frame.offsetBy(dx: 20, dy: 0))
+        expectEqual(
+            matchedWindowNumber(candidates: [sameFrameWindows[0], moved], observedTitle: "Document", observedFrame: frame, observedNumber: 602),
+            nil,
+            "a stale screenshot id-frame pair cannot fall back to another document at the old frame"
+        )
+        let resized = WindowNumberCandidate(number: 602, title: "Document", frame: frame.insetBy(dx: 0, dy: 5))
+        expectEqual(
+            matchedWindowNumber(candidates: [resized], observedTitle: "Document", observedFrame: frame, observedNumber: 602),
+            nil,
+            "a resized window cannot provide pixels for the observed geometry"
+        )
+        let near = WindowNumberCandidate(number: 603, title: "Another title", frame: frame.offsetBy(dx: 1, dy: -1))
+        expectEqual(
+            matchedWindowNumber(candidates: [moved, near], observedTitle: "Document", observedFrame: frame),
+            603,
+            "a single owner-frame match allows the existing point tolerance and title differences"
+        )
+
+        print("PASS WindowNumberMatcherTests")
     }
 }

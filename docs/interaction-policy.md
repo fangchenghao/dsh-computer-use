@@ -75,7 +75,7 @@ These fields do not claim that a target application can never change focus as it
 
 ### Host policy is not a Tool argument
 
-The deployment owns `focusPolicy`, `keyboardPolicy`, and `pointerInputPolicy`. `allowCoordinateFallback` says only that `computer_click` may try the host-authorized pointer route after `AXPress` is unavailable. It cannot enable pointer delivery or foreground activation. `computer_perform_action` also treats `AXRaise` as foreground-affecting and rejects it under `preserve`.
+The deployment owns `focusPolicy`, `keyboardPolicy`, and `pointerInputPolicy`. For a native element, `allowCoordinateFallback: true` permits clicking its center when a single left press fails or the requested gesture needs a pointer. Right and middle clicks and double or triple clicks require host-authorized targeted pointer input. The caller can also supply coordinates directly. `computer_perform_action` requires `focusPolicy: activate` for `AXRaise`.
 
 ### Accessibility remains the primary route
 
@@ -83,7 +83,7 @@ Semantic Accessibility operations are more stable than pixels and need no cursor
 
 ### Stable handles rebind only with independent identity evidence
 
-The public `targetHandle` is opaque and observation-local; it does not expose an `AXUIElement`, locator, or `AXIdentifier`. The Service stores the normalized descriptor in Agent-owned memory and re-observes immediately before a handle action. Exact locator identity is preferred. Rebinding is opt-in through `allowRebind` and requires either one provider-native identifier whose stable semantics still match or one semantic candidate with the same role, normalized accessible name, advertised actions, and stable ancestor fingerprint. The resolver preserves the exact bundle id, pid, and selected-window identity. A truncated tree cannot authorize rebinding. Duplicate candidates return `COMPUTER_TARGET_AMBIGUOUS`; missing or insufficient evidence returns `COMPUTER_TARGET_LOW_CONFIDENCE`.
+The public `targetHandle` is opaque and observation-local; it does not expose an `AXUIElement`, locator, or `AXIdentifier`. The Service stores the normalized descriptor in Agent-owned memory and re-observes immediately before a handle action. Exact locator identity is preferred. Rebinding is opt-in through `allowRebind` and requires either one provider-native identifier whose stable semantics still match or one semantic candidate with the same role, normalized accessible name, advertised actions, and stable ancestor fingerprint. Conflicting native identifiers rule out a semantic match. The resolver preserves the exact bundle id, pid, and selected-window identity. A truncated tree cannot authorize rebinding. Duplicate candidates return `COMPUTER_TARGET_AMBIGUOUS`; missing or insufficient evidence returns `COMPUTER_TARGET_LOW_CONFIDENCE`.
 
 Sensitive confirmation is bound to the exact handle action. Any native-identifier or semantic fallback marks the target changed, invalidates the prior token, and returns `COMPUTER_TARGET_REBIND_REQUIRES_CONFIRMATION` before input. Coordinates and screenshot-derived boxes cannot become handles, identity evidence, or authorization for a sensitive target. The caller must select the current handle and obtain a new one-use confirmation. Provider-native visual hit-testing remains a separate follow-up because the current visual workflow cannot independently validate a screenshot coordinate.
 
@@ -99,7 +99,7 @@ The visible Agent cursor is deliberately not the input source. It is a separate 
 
 ### Activation is an explicit compatibility mode
 
-Some applications accept input only while active. A deployment may set `focusPolicy: activate` (all actions) or `keyboardPolicy: activate` (keyboard actions only), accepting that the target application can take the foreground. Before emitting input, the helper activates the exact process and observes it again. Element and window targets are revalidated; for keyboard actions the refreshed focused element is the target, because activation may move focus to the app's default control. Any element/window mismatch fails with `COMPUTER_STALE_OBSERVATION` instead of acting on the pre-activation target.
+Some applications accept input only while active. A deployment may set `focusPolicy: activate` (all actions) or `keyboardPolicy: activate` (keyboard actions only), accepting that the target application can take the foreground. After activating the exact process, the helper observes it again. For a keyboard action the helper also waits for the application’s Accessibility activation notification and checks its focused window immediately before input. Focus may move between controls in the selected window. A window change or an unconfirmed activation returns `COMPUTER_STALE_OBSERVATION`. Observe the now-frontmost window before retrying. Element-addressed actions also revalidate the selected element.
 
 With `focusPolicy: preserve` and `keyboardPolicy: preserve`, the helper never performs this activation step.
 

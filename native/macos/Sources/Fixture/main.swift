@@ -59,6 +59,7 @@ private final class InputProbeView: NSView {
 
 private final class FixtureDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
+    private var secondaryWindow: NSWindow?
     private var textField: NSTextField!
     private var secureField: NSSecureTextField!
     private var checkbox: NSButton!
@@ -68,7 +69,7 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
     private var inputProbe: InputProbeView!
     private var stack: NSStackView!
     private var insertedHarmlessSibling = false
-    private var keyMonitor: Any?
+    private var inputMonitor: Any?
     private var reorderTimer: Timer?
     private var activationTimer: Timer?
     private var activationReleaseTimer: Timer?
@@ -77,10 +78,14 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
     private var pointerScrollCount = 0
     private var pointerDragCount = 0
     private var pointerMouseDownCount = 0
+    private var mouseDownEvents: [[Int]] = []
     private var pointerMouseUpCount = 0
     private var pointerDragGestureCount = 0
     private var activeDragGesture = false
     private var activationCount = 0
+    private var nativeButtonCount = 0
+    private var webButtonCount = 0
+    private var returnKeyCount = 0
     private let transcriptPath: String?
     private let reorderTriggerPath: String?
     private let activationTriggerPath: String?
@@ -136,10 +141,19 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.setActivationPolicy(.regular)
         }
         buildWindow()
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 36 else { return event }
-            self?.applyValues()
-            return nil
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown {
+                guard event.keyCode == 36 else { return event }
+                self.returnKeyCount += 1
+                self.applyValues()
+                return nil
+            }
+            if self.transcriptPath != nil, event.window === self.window {
+                self.mouseDownEvents.append([event.buttonNumber, event.clickCount])
+                self.writeTranscript(event: "mouse down")
+            }
+            return event
         }
         if launchInBackground {
             NSApplication.shared.unhideWithoutActivation()
@@ -193,11 +207,17 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         activationCount += 1
+        if window != nil, secondaryWindow == nil, ProcessInfo.processInfo.arguments.contains("--switch-window-on-activation") {
+            let document = NSWindow(contentRect: window.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            document.title = "Second fixture document"
+            secondaryWindow = document
+            document.makeKeyAndOrderFront(nil)
+        }
         writeTranscript(event: "activated")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
         reorderTimer?.invalidate()
         activationTimer?.invalidate()
         activationReleaseTimer?.invalidate()
@@ -326,6 +346,17 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
         let buttons = NSStackView(views: [apply, delayed, modal])
         buttons.orientation = .horizontal
         buttons.spacing = 10
+        if ProcessInfo.processInfo.arguments.contains("--web-area-sibling") {
+            apply.action = #selector(recordNativeButton)
+            apply.refusesFirstResponder = true
+            let webButton = NSButton(title: "Web fixture button", target: self, action: #selector(recordWebButton))
+            let webArea = NSStackView(views: [webButton])
+            webArea.setAccessibilityElement(true)
+            webArea.setAccessibilityRole(NSAccessibility.Role(rawValue: "AXWebArea"))
+            webArea.setAccessibilityLabel("Fixture web area")
+            webArea.setAccessibilityChildren([webButton])
+            buttons.addArrangedSubview(webArea)
+        }
 
         stack = NSStackView(views: [title, fields, checkbox, buttons, statusLabel, inputProbe, scroll])
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -342,6 +373,16 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
             inputProbe.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         window.initialFirstResponder = textField
+    }
+
+    @objc private func recordNativeButton() {
+        nativeButtonCount += 1
+        writeTranscript(event: "native button")
+    }
+
+    @objc private func recordWebButton() {
+        webButtonCount += 1
+        writeTranscript(event: "web button")
     }
 
     @objc private func applyValues() {
@@ -422,9 +463,13 @@ private final class FixtureDelegate: NSObject, NSApplicationDelegate {
             "pointerScrollCount": pointerScrollCount,
             "pointerDragCount": pointerDragCount,
             "pointerMouseDownCount": pointerMouseDownCount,
+            "mouseDownEvents": mouseDownEvents,
             "pointerMouseUpCount": pointerMouseUpCount,
             "pointerDragGestureCount": pointerDragGestureCount,
             "activationCount": activationCount,
+            "nativeButtonCount": nativeButtonCount,
+            "webButtonCount": webButtonCount,
+            "returnKeyCount": returnKeyCount,
             "activationPolicy": NSApplication.shared.activationPolicy().rawValue,
             "hidden": NSApplication.shared.isHidden,
             "windowVisible": window?.isVisible ?? false,

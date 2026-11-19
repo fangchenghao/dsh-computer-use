@@ -236,10 +236,6 @@ private func axString(_ element: AXUIElement, _ attribute: CFString) -> String? 
     axString(axCopy(element, attribute))
 }
 
-private func axBool(_ element: AXUIElement, _ attribute: CFString) -> Bool? {
-    (axCopy(element, attribute) as? NSNumber)?.boolValue
-}
-
 private func axPoint(_ raw: Any?) -> CGPoint? {
     guard let value = raw, CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
     let axValue = value as! AXValue
@@ -326,25 +322,6 @@ private func pressRecursive(_ element: AXUIElement, remainingDepth: Int, visited
     return false
 }
 
-/// True when an Accessibility press on a Chromium control returned success but
-/// changed neither the tree nor focus, which is how Chromium reports a press it
-/// never handled. Scoped to apps that publish an AXWebArea so native controls
-/// keep the fast, ordinary press path.
-private func pressLeftNoObservableEffect(
-    app: NSRunningApplication,
-    limits: [String: Any],
-    before: ObservationSnapshot,
-    record: ElementRecord
-) -> Bool {
-    guard before.elements.contains(where: { ($0.json["role"] as? String) == "AXWebArea" }) else { return false }
-    usleep(200_000)
-    guard let refreshed = try? observeSnapshot(app: app, limits: limits) else { return false }
-    guard refreshed.stateHash == before.stateHash else { return false }
-    guard let current = refreshed.elements.first(where: { $0.locator == record.locator }),
-          axBool(current.element, kAXFocusedAttribute as CFString) != true else { return false }
-    return true
-}
-
 private func sanitize(_ value: String, max: Int = 240) -> String {
     let collapsed = value.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
     guard collapsed.count > max else { return collapsed }
@@ -357,16 +334,16 @@ private func jsonString(_ value: String) -> String {
     return String(encoded.dropFirst().dropLast())
 }
 
+private func axElement(_ element: AXUIElement, _ attribute: CFString) -> AXUIElement? {
+    guard let value = axCopy(element, attribute) as AnyObject?,
+          CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    return (value as! AXUIElement)
+}
+
 private func chosenWindow(_ appElement: AXUIElement) -> AXUIElement? {
-    if let focused = axCopy(appElement, kAXFocusedWindowAttribute as CFString) as AnyObject?,
-       CFGetTypeID(focused) == AXUIElementGetTypeID() {
-        return (focused as! AXUIElement)
-    }
-    if let main = axCopy(appElement, kAXMainWindowAttribute as CFString) as AnyObject?,
-       CFGetTypeID(main) == AXUIElementGetTypeID() {
-        return (main as! AXUIElement)
-    }
-    return axChildren(appElement).first
+    axElement(appElement, kAXFocusedWindowAttribute as CFString)
+        ?? axElement(appElement, kAXMainWindowAttribute as CFString)
+        ?? axChildren(appElement).first
 }
 
 private func windowNumber(_ element: AXUIElement) -> Int? {
@@ -382,19 +359,15 @@ private func windowNumber(
         [.optionOnScreenOnly, .excludeDesktopElements],
         kCGNullWindowID
     ) as? [[String: Any]] else { return nil }
-    let candidates = windows.filter { window in
+    let candidates = windows.compactMap { window -> WindowNumberCandidate? in
         guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == app.processIdentifier,
-              (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return false }
-        if let frame {
-            guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
-                  let candidate = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
-            let tolerance: CGFloat = 2
-            guard abs(candidate.minX - frame.minX) <= tolerance,
-                  abs(candidate.minY - frame.minY) <= tolerance,
-                  abs(candidate.width - frame.width) <= tolerance,
-                  abs(candidate.height - frame.height) <= tolerance else { return false }
-        }
-        return true
+              (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return nil }
+        let bounds = window[kCGWindowBounds as String] as? [String: Any]
+        return WindowNumberCandidate(
+            number: (window[kCGWindowNumber as String] as? NSNumber)?.intValue,
+            title: window[kCGWindowName as String] as? String,
+            frame: bounds.flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+        )
     }
     // Frame plus owner already identifies one window in the common case, and
     // requiring the titles to be equal on top of that loses more than it
@@ -406,15 +379,7 @@ private func windowNumber(
     // So the title only has to disambiguate, and only when the frame did not.
     // Empty WindowServer titles carry no identity and must not participate in
     // prefix matching: every string has an empty prefix.
-    return matchedWindowNumber(
-        candidates: candidates.map { window in
-            WindowNumberCandidate(
-                number: (window[kCGWindowNumber as String] as? NSNumber)?.intValue,
-                title: window[kCGWindowName as String] as? String
-            )
-        },
-        observedTitle: title
-    )
+    return matchedWindowNumber(candidates: candidates, observedTitle: title, observedFrame: frame)
 }
 
 private func sha256(_ value: String) -> String {
@@ -455,8 +420,18 @@ private func ensureWebAccessibility(_ appElement: AXUIElement, window: AXUIEleme
         if let window, containsWebArea(window) { return true }
         return containsWebArea(appElement)
     }
-    if exposed() { return }
-    guard AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else { return }
+    // Chromium enables basic accessibility when assistive technology asks for
+    // the application's role, even if the manual Electron switch is absent.
+    _ = axCopy(appElement, kAXRoleAttribute as CFString)
+    let manual = "AXManualAccessibility" as CFString
+    var settable: DarwinBoolean = false
+    let capability = AXUIElementIsAttributeSettable(appElement, manual, &settable)
+    guard shouldPollForWebArea(
+        capability: capability,
+        settable: settable.boolValue,
+        webAreaIsExposed: exposed,
+        enable: { AXUIElementSetAttributeValue(appElement, manual, kCFBooleanTrue) == .success }
+    ) else { return }
     let deadline = Date().addingTimeInterval(2.5)
     while Date() < deadline {
         usleep(100_000)
@@ -605,20 +580,19 @@ private func captureWindow(_ snapshot: ObservationSnapshot, path: String, requir
         if required { throw fail("COMPUTER_PROVIDER_FAILURE", "ScreenCaptureKit could not enumerate windows") }
         return nil
     }
-    let expectedId = (snapshot.windowJSON?["id"] as? NSNumber)?.uint32Value
+    let expectedId = (snapshot.windowJSON?["id"] as? NSNumber)?.intValue
     let expectedFrame = (snapshot.windowJSON?["frame"] as? [String: Any]).flatMap { try? cgRect($0) }
     let windows = content.windows.filter { $0.owningApplication?.processID == snapshot.app.processIdentifier }
-    let selected = windows.first { window in
-        if let expectedId { return window.windowID == expectedId }
-        guard let expectedFrame else { return false }
-        let tolerance: CGFloat = 2
-        return abs(window.frame.minX - expectedFrame.minX) <= tolerance
-            && abs(window.frame.minY - expectedFrame.minY) <= tolerance
-            && abs(window.frame.width - expectedFrame.width) <= tolerance
-            && abs(window.frame.height - expectedFrame.height) <= tolerance
+    let selectedId = expectedFrame.flatMap { frame in
+        matchedWindowNumber(
+            candidates: windows.map { WindowNumberCandidate(number: Int($0.windowID), title: $0.title, frame: $0.frame) },
+            observedTitle: snapshot.windowJSON?["title"] as? String,
+            observedFrame: frame,
+            observedNumber: expectedId
+        )
     }
-    guard let selected else {
-        if required { throw fail("COMPUTER_TARGET_UNAVAILABLE", "the observed window is not available for capture") }
+    guard let selectedId, let selected = windows.first(where: { Int($0.windowID) == selectedId }) else {
+        if required { throw fail("COMPUTER_TARGET_UNAVAILABLE", "the observed window could not be uniquely matched at its observed frame for capture") }
         return nil
     }
     let filter = SCContentFilter(desktopIndependentWindow: selected)
@@ -684,6 +658,39 @@ private func activate(_ app: NSRunningApplication, timeoutMs: Int) throws {
             throw fail("COMPUTER_ACTION_BLOCKED", "the selected application did not become frontmost before the action timeout")
         }
         usleep(10_000)
+    }
+}
+
+private func activateForKeyboard(_ app: NSRunningApplication, timeoutMs: Int) throws {
+    // WindowServer can mark the process active before it handles activation and chooses its key window.
+    let appElement = AXUIElementCreateApplication(app.processIdentifier)
+    let notification = kAXApplicationActivatedNotification as CFString
+    let unconfirmed = fail("COMPUTER_STALE_OBSERVATION", "the application was activated but its keyboard window was not confirmed; observe it again before sending keys")
+    var received = false
+    try withUnsafeMutablePointer(to: &received) { receipt in
+        var observer: AXObserver?
+        let result = AXObserverCreate(app.processIdentifier, { _, _, _, context in
+            context?.assumingMemoryBound(to: Bool.self).pointee = true
+        }, &observer)
+        guard result == .success, let observer,
+              AXObserverAddNotification(observer, appElement, notification, receipt) == .success else {
+            try activate(app, timeoutMs: timeoutMs)
+            throw unconfirmed
+        }
+        let loop = CFRunLoopGetCurrent()
+        let source = AXObserverGetRunLoopSource(observer)
+        CFRunLoopAddSource(loop, source, .defaultMode)
+        defer {
+            CFRunLoopRemoveSource(loop, source, .defaultMode)
+            AXObserverRemoveNotification(observer, appElement, notification)
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + min(1, Double(timeoutMs) / 1000)
+        try activate(app, timeoutMs: timeoutMs)
+        while !receipt.pointee {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { throw unconfirmed }
+            CFRunLoopRunInMode(.defaultMode, remaining, true)
+        }
     }
 }
 
@@ -840,10 +847,20 @@ private func pressKey(_ key: String, modifiers: [String], app: NSRunningApplicat
 }
 
 private func focusedElement(_ app: NSRunningApplication) -> AXUIElement? {
-    let appElement = AXUIElementCreateApplication(app.processIdentifier)
-    guard let focused = axCopy(appElement, kAXFocusedUIElementAttribute as CFString) as AnyObject?,
-          CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
-    return (focused as! AXUIElement)
+    axElement(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedUIElementAttribute as CFString)
+}
+
+private func keyboardWindowStillSelected(_ snapshot: ObservationSnapshot) -> Bool {
+    guard snapshot.app.isActive else { return false }
+    let app = AXUIElementCreateApplication(snapshot.app.processIdentifier)
+    let focusedWindow = axElement(app, kAXFocusedWindowAttribute as CFString)
+        ?? axElement(app, kAXFocusedUIElementAttribute as CFString).flatMap { axElement($0, kAXWindowAttribute as CFString) }
+    guard let selected = snapshot.window, let focusedWindow else {
+        return snapshot.window == nil && focusedWindow == nil
+    }
+    if CFEqual(selected, focusedWindow) { return true }
+    guard let id = snapshot.windowJSON?["id"] as? Int else { return false }
+    return windowNumber(focusedWindow) == id
 }
 
 private func setSelectedText(_ text: String, app: NSRunningApplication) -> Bool {
@@ -959,16 +976,21 @@ private func inputContext(
     if app.isActive {
         return (snapshot, record, "already-frontmost")
     }
-    try activate(app, timeoutMs: timeoutMs)
+    if keyboardAction {
+        try activateForKeyboard(app, timeoutMs: timeoutMs)
+    } else {
+        try activate(app, timeoutMs: timeoutMs)
+    }
     let refreshed = try observeSnapshot(app: app, limits: limits)
     let refreshedRecord: ElementRecord?
     if request["element"] != nil {
         refreshedRecord = try validateTarget(request, snapshot: refreshed)
     } else if keyboardAction {
-        // Activation may move focus to the app's default control; typing targets
-        // the refreshed focused element. The app identity is already revalidated
-        // by the fresh observation, so full pre-activation state equality would
-        // only make reliable keyboard input fail.
+        // The app can change its key window while the refreshed AX tree is being read.
+        guard windowMatches(snapshot.windowJSON, current: refreshed.windowJSON),
+              keyboardWindowStillSelected(snapshot) else {
+            throw fail("COMPUTER_STALE_OBSERVATION", "the selected window changed while the target application was activated")
+        }
         refreshedRecord = nil
     } else {
         guard activationStateMatches(snapshot, current: refreshed) else {
@@ -1019,27 +1041,28 @@ private func performAction(
 
     switch kind {
     case "click":
-        // Chromium accepts AXPress on web content and activates nothing, so an
-        // element inside AXWebArea is clicked through targeted pointer input at
-        // its center. Native controls keep the Accessibility press path.
-        if let record, record.webContent, pointerInputPolicy != "targeted" {
-            throw fail("COMPUTER_ACTION_BLOCKED", "clicking Chromium web content requires targeted pointer input, which this host denies")
+        let button = try mouseButton(action["button"] as? String)
+        let requestedCount = action["clickCount"] ?? 1
+        guard let number = requestedCount as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let clickCount = Int(exactly: number.doubleValue), (1...3).contains(clickCount) else {
+            throw fail("COMPUTER_ACTION_BLOCKED", "clickCount must be 1, 2, or 3")
         }
-        var silentPressFallback = false
-        if let record, !record.webContent, pressWithDescendantFallback(record.element) {
-            if pointerInputPolicy == "targeted",
-               pressLeftNoObservableEffect(app: app, limits: limits, before: snapshot, record: record) {
-                silentPressFallback = true
-            } else {
-                return actionResult(channel: "accessibility", activation: "not-requested", pointerInput: false)
-            }
-        }
-        let elementFallback = record != nil && (bool(action["allowCoordinateFallback"]) || record?.webContent == true || silentPressFallback)
+        let primaryClick = button == .left && clickCount == 1
+        // Web content uses the element center because Chromium can accept AXPress without acting.
+        let elementFallback = record != nil && (bool(action["allowCoordinateFallback"]) || record?.webContent == true)
         let coordinateFallback = action["x"] != nil && action["y"] != nil
+        if !primaryClick || elementFallback || action["x"] != nil || action["y"] != nil {
+            try requirePointerInput(pointerInputPolicy)
+        }
+        if primaryClick, let record, !record.webContent, pressWithDescendantFallback(record.element) {
+            return actionResult(channel: "accessibility", activation: "not-requested", pointerInput: false)
+        }
         guard elementFallback || coordinateFallback else {
+            if !primaryClick {
+                throw fail("COMPUTER_ELEMENT_UNAVAILABLE", "this click gesture requires x and y or allowCoordinateFallback for the target element")
+            }
             throw fail("COMPUTER_ELEMENT_UNAVAILABLE", "element does not support an actionable AXPress and coordinate fallback was not requested")
         }
-        try requirePointerInput(pointerInputPolicy)
         let current = try inputContext(
             app: app,
             request: request,
@@ -1051,34 +1074,20 @@ private func performAction(
             actionKind: kind,
             timeoutMs: actionTimeoutMs,
         )
-        if let record = current.record, elementFallback, let frame = axFrame(record.element) {
-            let point = CGPoint(x: frame.midX, y: frame.midY)
-            let target = try pointerTarget(app: app, window: current.snapshot.windowJSON, at: point)
-            try pointerAction {
-                try targetedClick(
-                    at: point,
-                    button: try mouseButton(action["button"] as? String),
-                    count: min(max((action["clickCount"] as? NSNumber)?.intValue ?? 1, 1), 3),
-                    target: target
-                )
-            }
-            return actionResult(channel: "coordinates", activation: current.activation, pointerInput: true, pointerRouting: "target-process")
-        }
-        if action["x"] != nil, action["y"] != nil {
+        let point: CGPoint
+        if elementFallback, primaryClick || !coordinateFallback, let record = current.record, let frame = axFrame(record.element) {
+            point = CGPoint(x: frame.midX, y: frame.midY)
+        } else if coordinateFallback {
             let coordinateSpace = action["coordinateSpace"] as? String ?? "window"
-            let point = try windowPoint(action, window: current.snapshot.windowJSON, xKey: "x", yKey: "y", coordinateSpace: coordinateSpace)
-            let target = try pointerTarget(app: app, window: current.snapshot.windowJSON, at: point)
-            try pointerAction {
-                try targetedClick(
-                    at: point,
-                    button: try mouseButton(action["button"] as? String),
-                    count: min(max((action["clickCount"] as? NSNumber)?.intValue ?? 1, 1), 3),
-                    target: target
-                )
-            }
-            return actionResult(channel: "coordinates", activation: current.activation, pointerInput: true, pointerRouting: "target-process")
+            point = try windowPoint(action, window: current.snapshot.windowJSON, xKey: "x", yKey: "y", coordinateSpace: coordinateSpace)
+        } else {
+            throw fail("COMPUTER_ELEMENT_UNAVAILABLE", "coordinate fallback was requested but no current target coordinates were available")
         }
-        throw fail("COMPUTER_ELEMENT_UNAVAILABLE", "coordinate fallback was requested but no current target coordinates were available")
+        let target = try pointerTarget(app: app, window: current.snapshot.windowJSON, at: point)
+        try pointerAction {
+            try targetedClick(at: point, button: button, count: clickCount, target: target)
+        }
+        return actionResult(channel: "coordinates", activation: current.activation, pointerInput: true, pointerRouting: "target-process")
     case "set-value":
         guard let record else { throw fail("COMPUTER_ELEMENT_UNAVAILABLE", "set-value requires an observed element") }
         let value = try stringAllowingEmpty(action["value"], "action.value")
@@ -1315,10 +1324,20 @@ private func handle(
 }
 
 private func emit(_ payload: [String: Any], exitCode: Int32) -> Never {
-    let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data("{\"ok\":false,\"error\":{\"code\":\"COMPUTER_PROVIDER_FAILURE\",\"message\":\"response serialization failed\"}}".utf8)
+    let data: Data
+    var status = exitCode
+    do {
+        data = try encodeHelperResponse(payload)
+    } catch HelperResponseError.protocolLimit {
+        data = Data("{\"ok\":false,\"error\":{\"code\":\"COMPUTER_PROVIDER_FAILURE\",\"message\":\"native helper response metadata exceeds the 4 MiB protocol limit\"}}".utf8)
+        status = 2
+    } catch {
+        data = Data("{\"ok\":false,\"error\":{\"code\":\"COMPUTER_PROVIDER_FAILURE\",\"message\":\"response serialization failed\"}}".utf8)
+        status = 2
+    }
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data("\n".utf8))
-    Darwin.exit(exitCode)
+    Darwin.exit(status)
 }
 
 private func emitFrame(_ payload: [String: Any]) {

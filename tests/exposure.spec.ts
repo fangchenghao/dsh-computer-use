@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   COMPUTER_USE_ACTIVATE,
   ComputerUseExposure,
@@ -211,9 +211,10 @@ describe('progressive Computer Use exposure', () => {
   it('blocks ad hoc OCR shell calls when Vision Toolkit is ready', async () => {
     const listeners = new Map<string, (...args: never[]) => unknown>()
     let guard: ((exec: { name: string; agent?: typeof agent; arguments: unknown }) => string | undefined) | undefined
+    const snapshotEvents = vi.fn(() => loadedSession().events)
     const agent = {
       id: 'agent-4',
-      session: loadedSession(),
+      session: { snapshotEvents },
       ctx: {
         tools: {
           register: () => () => {},
@@ -244,10 +245,12 @@ describe('progressive Computer Use exposure', () => {
       arguments: { command: 'which swift tesseract screencapture; tesseract screenshot.png stdout' },
     })).toContain('call the skill tool with {"name":"vision-tools"}')
 
+    snapshotEvents.mockClear()
     expect(guard?.({ name: 'bash', agent, arguments: { command: 'git status --short' } })).toBeUndefined()
 
     expect(guard?.({ name: 'bash', agent, arguments: { command: 'rg -n "tesseract|screencapture" src tests' } })).toBeUndefined()
     expect(guard?.({ name: 'bash', agent, arguments: { command: 'rg -n "python|import Vision|VNRecognizeTextRequest" src tests' } })).toBeUndefined()
+    expect(snapshotEvents).not.toHaveBeenCalled()
 
     expect(guard?.({
       name: 'bash',
@@ -259,6 +262,8 @@ describe('progressive Computer Use exposure', () => {
     expect(guard?.({ name: 'bash', agent, arguments: { command: 'command tesseract screen.png stdout' } })).toContain('installed Vision Toolkit')
 
     visionReady = false
+    snapshotEvents.mockClear()
     expect(guard?.({ name: 'bash', agent, arguments: { command: 'tesseract screenshot.png stdout' } })).toBeUndefined()
+    expect(snapshotEvents).not.toHaveBeenCalled()
   })
 })

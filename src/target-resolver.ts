@@ -88,6 +88,8 @@ function sameStableFields(left: ComputerTargetDescriptor, right: ComputerTargetD
 }
 
 function sameSemanticIdentity(left: ComputerTargetDescriptor, right: ComputerTargetDescriptor): boolean {
+  if (left.nativeIdentifier !== undefined && right.nativeIdentifier !== undefined
+    && left.nativeIdentifier !== right.nativeIdentifier) return false
   return left.accessibleName !== undefined && sameStableFields(left, right)
 }
 

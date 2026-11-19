@@ -128,6 +128,7 @@ describe('model-facing Computer Use tools', () => {
     expect(tools[2]?.parameters).not.toHaveProperty('properties.focusPolicy')
     expect(tools[2]?.parameters).not.toHaveProperty('properties.pointerInputPolicy')
     expect(tools[2]?.parameters).toMatchObject({ properties: { coordinateSpace: { enum: ['window', 'screen', 'screenshot'] } } })
+    expect(tools[2]?.parameters).toMatchObject({ properties: { clickCount: { type: 'integer', enum: [1, 2, 3] } } })
     expect(tools[2]?.parameters).toMatchObject({ properties: { targetHandle: { type: 'string' }, allowRebind: { type: 'boolean' } } })
     expect(tools[6]?.parameters).toMatchObject({ properties: { coordinateSpace: { enum: ['window', 'screen', 'screenshot'] } } })
     expect(tools[7]?.parameters).toMatchObject({ properties: { coordinateSpace: { enum: ['window', 'screen', 'screenshot'] } } })
@@ -150,6 +151,7 @@ describe('model-facing Computer Use tools', () => {
     expect(confirmationBranches.map(branch => branch.properties.kind.const)).toEqual([
       'click', 'set-value', 'type-text', 'press-key', 'scroll', 'drag', 'perform-action',
     ])
+    expect(confirmationBranches[0]).toMatchObject({ properties: { clickCount: { type: 'integer', enum: [1, 2, 3] } } })
 
     const exec = {
       name: 'computer-test',

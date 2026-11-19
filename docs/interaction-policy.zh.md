@@ -75,7 +75,7 @@ resolution?: {
 
 ### 宿主策略不是 Tool 参数
 
-`focusPolicy`、`keyboardPolicy` 与 `pointerInputPolicy` 归部署方所有。`allowCoordinateFallback` 只表示 `computer_click` 在 `AXPress` 不可用后可以尝试宿主已授权的指针路由，不能自行开启指针投递或前台激活。`computer_perform_action` 也会把 `AXRaise` 视为影响前台的动作，并在 `preserve` 下拒绝。
+`focusPolicy`、`keyboardPolicy` 与 `pointerInputPolicy` 由部署方设置。对原生元素，`allowCoordinateFallback: true` 允许在左键单击无法通过 `AXPress` 执行，或所请求的手势需要指针时，点击该元素的中心。右键、中键、双击和三击需要宿主允许定向指针输入。调用方也可以直接提供坐标。`computer_perform_action` 执行 `AXRaise` 时需要设置 `focusPolicy: activate`。
 
 ### Accessibility 始终是主路径
 
@@ -83,7 +83,7 @@ resolution?: {
 
 ### Stable handle 只在独立身份依据充分时 rebind
 
-公开的 `targetHandle` 是 opaque 且 observation-local 的；它不暴露 `AXUIElement`、locator 或 `AXIdentifier`。Service 把 normalized descriptor 保存在 Agent 自有内存中，并在 handle 动作前立即重新观察。系统优先使用准确 locator 身份。Rebind 必须通过 `allowRebind` 显式启用，并且只能依赖稳定语义仍一致的唯一 provider-native identifier，或 role、normalized accessible name、已声明 action 与稳定 ancestor fingerprint 全部一致的唯一 semantic candidate。Resolver 保留准确 bundle id、pid 与选定窗口身份。Truncated tree 不能授权 rebind。重复 candidate 返回 `COMPUTER_TARGET_AMBIGUOUS`；证据缺失或不足返回 `COMPUTER_TARGET_LOW_CONFIDENCE`。
+公开的 `targetHandle` 是 opaque 且 observation-local 的；它不暴露 `AXUIElement`、locator 或 `AXIdentifier`。Service 把 normalized descriptor 保存在 Agent 自有内存中，并在 handle 动作前立即重新观察。系统优先使用准确 locator 身份。Rebind 必须通过 `allowRebind` 显式启用，并且只能依赖稳定语义仍一致的唯一 provider-native identifier，或 role、normalized accessible name、已声明 action 与稳定 ancestor fingerprint 全部一致的唯一 semantic candidate。如果两个元素的原生标识都已知且不同，语义匹配也会拒绝这个候选。Resolver 保留准确 bundle id、pid 与选定窗口身份。Truncated tree 不能授权 rebind。重复 candidate 返回 `COMPUTER_TARGET_AMBIGUOUS`；证据缺失或不足返回 `COMPUTER_TARGET_LOW_CONFIDENCE`。
 
 敏感 confirmation 绑定准确 handle action。任何 native-identifier 或 semantic fallback 都会把目标标记为 changed，在输入前使旧 token 失效，并返回 `COMPUTER_TARGET_REBIND_REQUIRES_CONFIRMATION`。坐标与截图-derived box 不能变成 handle、身份依据或敏感目标授权。调用方必须选择当前 handle，并获取新的单次 confirmation。Provider-native visual hit-test 被明确拆为后续能力，因为当前视觉流程无法独立校验截图坐标。
 
@@ -99,7 +99,7 @@ Helper 不会先移动系统光标再尝试恢复。那种设计仍会打断用�
 
 ### 激活是显式兼容模式
 
-少数应用只有在 active 状态下才接受输入。部署方可以设置 `focusPolicy: activate`（全部动作）或 `keyboardPolicy: activate`（仅键盘动作），并明确接受目标应用可能抢到前台。Helper 会先激活准确进程并再次观察；元素与窗口目标会被重新校验，键盘动作则以刷新后的 focused element 为目标，因为激活可能把焦点移到应用默认控件。任何元素/窗口不匹配都会返回 `COMPUTER_STALE_OBSERVATION`，而不是继续操作激活前的目标。
+少数应用只有在 active 状态下才接受输入。部署方可以设置 `focusPolicy: activate`（全部动作）或 `keyboardPolicy: activate`（仅键盘动作），并明确接受目标应用可能抢到前台。Helper 激活目标进程后会重新观察。发送按键前，helper 会等待应用自身的辅助功能激活通知，并再次核对当前接收键盘输入的窗口。同一窗口内的控件可以转移焦点。如果切换了窗口，或应用的激活无法确认，helper 会返回 `COMPUTER_STALE_OBSERVATION`。此时请先重新观察已经到前台的窗口。以元素为目标的动作也会重新校验选中的元素。
 
 `focusPolicy: preserve` 且 `keyboardPolicy: preserve` 时，helper 不会执行这个激活步骤。
 

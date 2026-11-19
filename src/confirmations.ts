@@ -64,6 +64,7 @@ export class ComputerConfirmationManager {
       reason: `${request.reason} Target: ${request.target}.${request.dataSummary === undefined ? '' : ` Data: ${request.dataSummary}.`}`,
       signal,
     })
+    signal.throwIfAborted()
     if (outcome === 'cancelled') throw new ComputerUseError('COMPUTER_CANCELLED', 'sensitive action confirmation was cancelled')
     if (outcome !== 'allowed-once') {
       throw new ComputerUseError('COMPUTER_CONFIRMATION_REQUIRED', `sensitive action was not confirmed (${outcome})`)

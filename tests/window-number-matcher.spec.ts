@@ -7,24 +7,23 @@ import { temporaryDirectory } from './helpers.ts'
 
 const execFileAsync = promisify(execFile)
 const ROOT = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
-const MATCHER = join(ROOT, 'native', 'macos', 'Sources', 'Helper', 'WindowNumberMatcher.swift')
-const CASES = join(ROOT, 'native', 'macos', 'Tests', 'WindowNumberMatcherTests.swift')
+const NATIVE = join(ROOT, 'native', 'macos')
 
-describe.skipIf(process.platform !== 'darwin')('native window-number matcher', () => {
-  it('disambiguates only on one non-empty title match and otherwise fails closed', async () => {
-    const temporary = await temporaryDirectory('dsh-computer-window-matcher-')
+describe.skipIf(process.platform !== 'darwin')('native observation', () => {
+  it.each(['WindowNumberMatcher', 'WebAccessibility', 'HelperResponse'])('passes %s cases', async name => {
+    const temporary = await temporaryDirectory('dsh-computer-observation-')
     try {
-      const executable = join(temporary.path, 'window-number-matcher-tests')
+      const executable = join(temporary.path, name)
       await execFileAsync('xcrun', [
         'swiftc',
         '-swift-version', '5',
         '-parse-as-library',
-        MATCHER,
-        CASES,
+        join(NATIVE, 'Sources', 'Helper', `${name}.swift`),
+        join(NATIVE, 'Tests', `${name}Tests.swift`),
         '-o', executable,
       ], { timeout: 60_000 })
       const result = await execFileAsync(executable, [], { timeout: 10_000 })
-      expect(result.stdout).toContain('PASS WindowNumberMatcherTests (5 cases)')
+      expect(result.stdout.trim()).toBe(`PASS ${name}Tests`)
     } finally {
       await temporary.cleanup()
     }

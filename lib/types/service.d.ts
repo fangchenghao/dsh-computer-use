@@ -14,6 +14,8 @@ export declare class ComputerUseService extends Service {
     private backend;
     private config;
     private generation;
+    private generationLifetime;
+    private reconfiguration;
     private readonly agents;
     private readonly actionTails;
     private readonly leases;
@@ -28,6 +30,7 @@ export declare class ComputerUseService extends Service {
     protected initialize(): Promise<void>;
     /** Replace the backend/config generation after a validated live Settings update. */
     protected reconfigure(backend: ComputerUseBackend, config: ResolvedComputerUseConfig): Promise<void>;
+    private operationSignal;
     /** Current provider and permission diagnostics. */
     status(): ComputerUseStatus;
     /** Re-run non-mutating provider health checks. */

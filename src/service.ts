@@ -5,7 +5,7 @@ import { rm } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { BackendActionResult, BackendCursorAction, BackendHealth, BackendObservation, ComputerUseBackend, CursorVisibility } from './backend.ts'
+import type { BackendActionResult, BackendCursorAction, BackendElement, BackendHealth, BackendObservation, ComputerUseBackend, CursorVisibility } from './backend.ts'
 import { allocateScreenshotPath, describeScreenshot } from './artifacts.ts'
 import type { ResolvedComputerUseConfig } from './config.ts'
 import { ComputerConfirmationManager } from './confirmations.ts'
@@ -25,6 +25,7 @@ import {
   type ComputerActionResult,
   type ComputerAppIdentity,
   type ComputerAppSummary,
+  type ComputerClickAction,
   type ComputerConfirmRequest,
   type ComputerConfirmation,
   type ComputerElement,
@@ -45,28 +46,46 @@ declare module '@deepseek-ai/cordis' {
 interface StoredObservation {
   public: ComputerObservation
   backend: BackendObservation
-  targets: Map<ComputerTargetHandle, ComputerTargetDescriptor>
+  targets: Map<ComputerTargetHandle, BackendElement>
+  targetCache?: {
+    byLocator: ReadonlyMap<string, BackendElement>
+    descriptors: Map<BackendElement, ComputerTargetDescriptor>
+  }
   generation: number
 }
 
 interface AgentState {
+  lifetime: AbortController
   observations: Map<ComputerObservationId, StoredObservation>
   latestByApp: Map<string, ComputerObservationId>
 }
 
 function publicElements(observation: BackendObservation): {
   elements: ComputerElement[]
-  targets: Map<ComputerTargetHandle, ComputerTargetDescriptor>
+  targets: Map<ComputerTargetHandle, BackendElement>
 } {
-  const targets = new Map<ComputerTargetHandle, ComputerTargetDescriptor>()
-  const byLocator = indexElementsByLocator(observation)
+  const targets = new Map<ComputerTargetHandle, BackendElement>()
   const elements = observation.elements.map((backendElement) => {
-    const { locator: _locator, nativeIdentifier: _nativeIdentifier, ...element } = backendElement
+    const { locator: _locator, nativeIdentifier: _nativeIdentifier, actions, frame, ...element } = backendElement
     const targetHandle = ComputerTargetHandle(randomUUID())
-    targets.set(targetHandle, describeComputerTarget(backendElement, observation, byLocator))
-    return { ...element, targetHandle }
+    targets.set(targetHandle, backendElement)
+    // Public results are mutable. Keep the original actions and geometry as provider evidence.
+    return { ...element, targetHandle, actions: [...actions], ...(frame === undefined ? {} : { frame: { ...frame } }) }
   })
   return { elements, targets }
+}
+
+function describeStoredTarget(stored: StoredObservation, element: BackendElement): ComputerTargetDescriptor {
+  const cache = stored.targetCache ??= {
+    byLocator: indexElementsByLocator(stored.backend),
+    descriptors: new Map<BackendElement, ComputerTargetDescriptor>(),
+  }
+  let descriptor = cache.descriptors.get(element)
+  if (descriptor === undefined) {
+    descriptor = describeComputerTarget(element, stored.backend, cache.byLocator)
+    cache.descriptors.set(element, descriptor)
+  }
+  return descriptor
 }
 
 /** Screenshot pixels per window point, or undefined when either is unavailable. */
@@ -95,9 +114,9 @@ function requiresCoordinates(action: Exclude<ComputerActionRequest, { kind: 'wai
 }
 
 /**
- * Translate screenshot-pixel coordinates into the window-point space that the
- * provider and the Agent cursor use, and flag window coordinates that only make
- * sense as screenshot pixels.
+ * Validate the click count before confirmation or input. Translate screenshot
+ * pixels into window points and flag window coordinates that only make sense as
+ * screenshot pixels.
  *
  * A macOS screenshot is captured at the window's backing scale (usually 2x on
  * Retina), while element frames, `coordinateSpace: window` and the provider all
@@ -105,10 +124,13 @@ function requiresCoordinates(action: Exclude<ComputerActionRequest, { kind: 'wai
  * its intended offset unless it is divided by `pixelScale`; that is the offset
  * this normalization exists to remove.
  */
-function normalizeActionCoordinates(
+function normalizeAction(
   action: Exclude<ComputerActionRequest, { kind: 'wait' }>,
   observation: BackendObservation,
 ): Exclude<ComputerActionRequest, { kind: 'wait' }> {
+  if (action.kind === 'click' && action.clickCount !== undefined && ![1, 2, 3].includes(action.clickCount)) {
+    throw new ComputerUseError('COMPUTER_ACTION_BLOCKED', 'clickCount must be 1, 2, or 3')
+  }
   const space = action.kind === 'click' || action.kind === 'scroll' || action.kind === 'drag'
     ? action.coordinateSpace
     : undefined
@@ -246,15 +268,19 @@ function requiresElement(action: ComputerActionRequest): boolean {
   return action.kind === 'set-value' || action.kind === 'perform-action'
 }
 
+function isPrimaryClick(action: ComputerClickAction): boolean {
+  return (action.button ?? 'left') === 'left' && (action.clickCount ?? 1) === 1
+}
+
 function requiresPointerInput(
   action: Exclude<ComputerActionRequest, { kind: 'wait' }>,
   element: BackendObservation['elements'][number] | undefined,
 ): boolean {
   switch (action.kind) {
     case 'click':
-      if (action.x !== undefined || action.y !== undefined) return true
-      return element !== undefined
-        && action.allowCoordinateFallback === true
+      return !isPrimaryClick(action)
+        || action.x !== undefined || action.y !== undefined
+        || (element !== undefined && action.allowCoordinateFallback === true)
     case 'scroll':
     case 'drag': return true
     case 'set-value':
@@ -296,7 +322,10 @@ function cursorAction(
   switch (action.kind) {
     case 'click':
     case 'scroll': {
-      const point = elementPoint ?? windowPoint(action.x, action.y)
+      const coordinates = windowPoint(action.x, action.y)
+      const point = action.kind === 'click' && !isPrimaryClick(action)
+        ? coordinates ?? elementPoint
+        : elementPoint ?? coordinates
       return point === undefined ? undefined : { kind: action.kind, to: point, ...target }
     }
     case 'drag': {
@@ -316,6 +345,8 @@ export class ComputerUseService extends Service {
   private backend: ComputerUseBackend
   private config: ResolvedComputerUseConfig
   private generation = 1
+  private generationLifetime = new AbortController()
+  private reconfiguration: Promise<void> = Promise.resolve()
   private readonly agents = new Map<Agent, AgentState>()
   private readonly actionTails = new Map<string, Promise<void>>()
   private readonly leases: ComputerLeaseManager
@@ -347,7 +378,7 @@ export class ComputerUseService extends Service {
     this.leases = new ComputerLeaseManager(ctx, () => this.config)
     this.confirmations = new ComputerConfirmationManager(ctx, () => this.config)
     ctx.effect(() => async () => {
-      this.lifecycle.abort()
+      this.lifecycle.abort(new ComputerUseError('COMPUTER_CANCELLED', 'the Computer Use service was disposed'))
       this.clearState()
       await this.backend.dispose()
     }, 'dsh-computer-use: service lifecycle')
@@ -355,11 +386,17 @@ export class ComputerUseService extends Service {
 
   /** Verify the active backend before consumers become injectable. */
   protected async initialize(): Promise<void> {
+    const signal = AbortSignal.any([this.lifecycle.signal, this.generationLifetime.signal])
     try {
       await this.leases.initialize()
-      this.applyHealth(await this.backend.health(this.lifecycle.signal))
+      signal.throwIfAborted()
+      const health = await this.backend.health(signal)
+      signal.throwIfAborted()
+      this.applyHealth(health)
     } catch (error) {
-      const failure = computerUseError(error, 'Computer Use provider initialization failed')
+      // A successfully validated replacement already published its own health.
+      if (signal.aborted && !this.lifecycle.signal.aborted) return
+      const failure = computerUseError(error, 'Computer Use provider initialization failed', { signal })
       this.healthState = {
         ready: false,
         accessibility: 'unavailable',
@@ -371,15 +408,37 @@ export class ComputerUseService extends Service {
   }
 
   /** Replace the backend/config generation after a validated live Settings update. */
-  protected async reconfigure(backend: ComputerUseBackend, config: ResolvedComputerUseConfig): Promise<void> {
-    const health = await backend.health(this.lifecycle.signal)
-    const previous = this.backend
-    this.backend = backend
-    this.config = config
-    this.generation += 1
-    this.clearState()
-    this.applyHealth(health)
-    await previous.dispose()
+  protected reconfigure(backend: ComputerUseBackend, config: ResolvedComputerUseConfig): Promise<void> {
+    // Settings updates can overlap. Validate and install them in submission order.
+    const run = this.reconfiguration.then(async () => {
+      const signal = this.lifecycle.signal
+      signal.throwIfAborted()
+      const health = await backend.health(signal)
+      signal.throwIfAborted()
+      const previous = this.backend
+      const previousLifetime = this.generationLifetime
+      this.backend = backend
+      this.config = config
+      this.generation += 1
+      this.generationLifetime = new AbortController()
+      this.clearState()
+      this.applyHealth(health)
+      previousLifetime.abort(new ComputerUseError('COMPUTER_CANCELLED', 'Computer Use settings changed during this operation'))
+      try {
+        await previous.dispose()
+      } catch (error) {
+        // The candidate is already active. Its owner disposes candidates on rejection.
+        this.ctx.get('logger')?.warn('dsh-computer-use: could not dispose the retired provider: %s', error)
+      }
+    })
+    this.reconfiguration = run.catch(() => undefined)
+    return run
+  }
+
+  private operationSignal(caller: AbortSignal, agent?: Agent): AbortSignal {
+    const signals = [caller, this.lifecycle.signal, this.generationLifetime.signal]
+    if (agent !== undefined) signals.push(this.state(agent).lifetime.signal)
+    return AbortSignal.any(signals)
   }
 
   /** Current provider and permission diagnostics. */
@@ -395,11 +454,15 @@ export class ComputerUseService extends Service {
 
   /** Re-run non-mutating provider health checks. */
   async health(signal: AbortSignal): Promise<ComputerUseStatus> {
+    const operation = this.operationSignal(signal)
     try {
-      this.applyHealth(await this.backend.health(AbortSignal.any([signal, this.lifecycle.signal])))
+      operation.throwIfAborted()
+      const health = await this.backend.health(operation)
+      operation.throwIfAborted()
+      this.applyHealth(health)
     } catch (error) {
-      const failure = computerUseError(error, 'Computer Use health check failed')
-      this.healthState = { ...this.healthState, ready: false, lastError: failure.message }
+      const failure = computerUseError(error, 'Computer Use health check failed', { signal: operation })
+      if (!operation.aborted) this.healthState = { ...this.healthState, ready: false, lastError: failure.message }
       throw failure
     }
     return this.status()
@@ -407,49 +470,62 @@ export class ComputerUseService extends Service {
 
   /** Open the exact macOS privacy pane after an explicit Settings-page action. */
   async openPermissionSettings(kind: 'accessibility' | 'screen-recording', signal: AbortSignal): Promise<void> {
-    await this.backend.openSettings(kind, AbortSignal.any([signal, this.lifecycle.signal]))
+    const operation = this.operationSignal(signal)
+    operation.throwIfAborted()
+    await this.backend.openSettings(kind, operation)
+    operation.throwIfAborted()
   }
 
   /** List bounded running applications without inspecting their UI contents. */
   async listApps(context: ComputerUseContext): Promise<ComputerAppSummary[]> {
-    return await this.backend.listApps(AbortSignal.any([context.signal, this.lifecycle.signal]))
+    const signal = this.operationSignal(context.signal, context.agent)
+    signal.throwIfAborted()
+    const apps = await this.backend.listApps(signal)
+    signal.throwIfAborted()
+    return apps
   }
 
   /** Obtain a fresh, scoped observation after enforcing the app read lease. */
   async observe(request: ComputerObserveRequest, context: ComputerUseContext): Promise<ComputerObservation> {
-    const signal = AbortSignal.any([context.signal, this.lifecycle.signal])
+    const signal = this.operationSignal(context.signal, context.agent)
+    signal.throwIfAborted()
     const app = await this.backend.resolveApp(request.app, signal)
+    signal.throwIfAborted()
     await this.leases.ensure(context.agent, app, 'read', 'computer_observe', context.callId, signal)
-    return await this.capture(app, request, context, 'computer_observe')
+    return await this.capture(app, request, context, 'computer_observe', signal)
   }
 
   /** Ask for a one-use token bound to an exact proposed sensitive action. */
   async confirm(request: ComputerConfirmRequest, context: ComputerUseContext): Promise<ComputerConfirmation> {
+    const signal = this.operationSignal(context.signal, context.agent)
+    signal.throwIfAborted()
     const stored = this.requireObservation(request.action.observationId, context.agent)
     // Mint the token over the same normalized action that act() will execute;
     // otherwise a screenshot-space proposal hashes differently after
     // normalization and the one-use token can never match.
     const action = request.action.kind === 'wait'
       ? request.action
-      : normalizeActionCoordinates(request.action as Exclude<ComputerActionRequest, { kind: 'wait' }>, stored.backend)
-    return await this.confirmations.confirm(
+      : normalizeAction(request.action as Exclude<ComputerActionRequest, { kind: 'wait' }>, stored.backend)
+    const confirmation = await this.confirmations.confirm(
       context.agent,
       stored.backend.app,
       { ...request, action },
       context.callId,
-      AbortSignal.any([context.signal, this.lifecycle.signal]),
+      signal,
     )
+    signal.throwIfAborted()
+    return confirmation
   }
 
   /** Execute one observation-bound action and always return a fresh post-action observation. */
   async act(action: ComputerActionRequest, context: ComputerUseContext): Promise<ComputerActionResult> {
-    const signal = AbortSignal.any([context.signal, this.lifecycle.signal])
+    const signal = this.operationSignal(context.signal, context.agent)
     let actionMayHaveExecuted = false
     try {
       signal.throwIfAborted()
       const stored = this.requireObservation(action.observationId, context.agent)
       if (action.kind === 'wait') return await this.wait(stored, action, context, signal)
-      const normalized = normalizeActionCoordinates(action, stored.backend)
+      const normalized = normalizeAction(action, stored.backend)
       return await this.enqueueAction(stored.backend.app, async () => {
         signal.throwIfAborted()
         return await this.actNow(normalized, context, signal, () => { actionMayHaveExecuted = true })
@@ -468,6 +544,8 @@ export class ComputerUseService extends Service {
     signal: AbortSignal,
     markActionStarted: () => void,
   ): Promise<ComputerActionResult> {
+    const backend = this.backend
+    const generationSignal = this.generationLifetime.signal
     const stored = this.requireObservation(action.observationId, context.agent)
     const index = targetIndex(action)
     const handle = targetHandle(action)
@@ -478,21 +556,14 @@ export class ComputerUseService extends Service {
     if (allowsTargetRebind(action) && handle === undefined) {
       throw new ComputerUseError('COMPUTER_TARGET_UNAVAILABLE', 'allowRebind requires a targetHandle from the referenced observation')
     }
-    const descriptor = handle === undefined ? undefined : stored.targets.get(handle)
-    if (handle !== undefined && descriptor === undefined) {
+    const handleElement = handle === undefined ? undefined : stored.targets.get(handle)
+    if (handle !== undefined && handleElement === undefined) {
       throw new ComputerUseError('COMPUTER_TARGET_UNAVAILABLE', 'targetHandle is unknown or does not belong to the referenced observation')
     }
-    if (descriptor !== undefined && index !== undefined && (descriptor.locator.length !== originalElement?.locator.length
-      || !descriptor.locator.every((part, position) => part === originalElement.locator[position]))) {
+    if (handleElement !== undefined && originalElement !== undefined && handleElement !== originalElement) {
       throw new ComputerUseError('COMPUTER_TARGET_UNAVAILABLE', 'elementIndex and targetHandle select different elements')
     }
-    const selectedOriginalElement = originalElement ?? (descriptor === undefined
-      ? undefined
-      : stored.backend.elements.find(candidate => candidate.locator.length === descriptor.locator.length
-        && candidate.locator.every((part, position) => part === descriptor.locator[position])))
-    if (descriptor !== undefined && selectedOriginalElement === undefined) {
-      throw new ComputerUseError('COMPUTER_TARGET_UNAVAILABLE', 'targetHandle no longer has provider evidence in the referenced observation')
-    }
+    const selectedOriginalElement = handleElement ?? originalElement
     if (requiresElement(action) && selectedOriginalElement === undefined) {
       throw new ComputerUseError('COMPUTER_ELEMENT_UNAVAILABLE', `${action.kind} requires elementIndex or targetHandle`)
     }
@@ -509,6 +580,7 @@ export class ComputerUseService extends Service {
       )
     }
     await this.leases.ensure(context.agent, stored.backend.app, 'control', `computer_${action.kind}`, context.callId, signal)
+    signal.throwIfAborted()
     const cursorRequested = this.config.interaction.cursorVisualization === 'visible'
       && (action.kind === 'click' || action.kind === 'scroll' || action.kind === 'drag')
     const observationOptions = {
@@ -523,10 +595,10 @@ export class ComputerUseService extends Service {
     let resolution: ComputerTargetResolutionResult | undefined = selectedOriginalElement === undefined
       ? undefined
       : { mode: 'exact-locator', confidence: 1, candidateCount: 1, targetChanged: false }
+    const descriptor = handleElement === undefined ? undefined : describeStoredTarget(stored, handleElement)
     if (descriptor !== undefined) {
-      const fresh = actionObservation === stored.backend
-        ? await this.backend.observe(stored.backend.app, observationOptions, signal)
-        : actionObservation
+      const fresh = await backend.observe(stored.backend.app, observationOptions, signal)
+      signal.throwIfAborted()
       const resolved = resolveComputerTarget(stored.backend, fresh, descriptor, allowsTargetRebind(action))
       actionObservation = resolved.observation
       element = resolved.element
@@ -543,12 +615,13 @@ export class ComputerUseService extends Service {
       && this.config.interaction.focusPolicy === 'activate'
       && requiresPointerInput(action, selectedOriginalElement)
       && !actionObservation.frontmost) {
-      const activated = await this.backend.activateForCursor(
+      const activated = await backend.activateForCursor(
         stored.backend.app,
         actionObservation.stateHash,
         observationOptions,
         signal,
       )
+      signal.throwIfAborted()
       actionObservation = activated.observation
       cursorActivation = activated.activation
       if (descriptor !== undefined) {
@@ -591,11 +664,12 @@ export class ComputerUseService extends Service {
     } else if (visualization !== undefined && cursorRequested) {
       let beforeCursor: CursorVisibility
       try {
-        beforeCursor = await this.backend.visualizeCursor(visualization, 'before', signal)
+        beforeCursor = await backend.visualizeCursor(visualization, 'before', signal)
       } catch (error) {
         throw computerUseError(error, 'the agent cursor could not be driven before the action', { signal })
       }
       recordCursor(beforeCursor)
+      if (!beforeCursor.visible) signal.throwIfAborted()
       const intentionalBackground = beforeCursor.reasonCode === 'target-not-frontmost'
         && (this.config.interaction.focusPolicy === 'preserve'
           || !requiresPointerInput(action, selectedOriginalElement))
@@ -623,7 +697,7 @@ export class ComputerUseService extends Service {
       this.confirmations.consume(context.agent, stored.backend.app, action)
       markActionStarted()
       if (cursorStarted && visualization?.kind === 'drag') {
-        const tracked = await this.backend.actDragWithCursor(
+        const tracked = await backend.actDragWithCursor(
           request,
           visualization as BackendCursorAction & { kind: 'drag' },
           signal,
@@ -631,18 +705,20 @@ export class ComputerUseService extends Service {
         recordCursor(tracked.cursor)
         outcome = tracked.action
       } else {
-        outcome = await this.backend.act(request, signal)
+        outcome = await backend.act(request, signal)
       }
       if (cursorActivation === 'activated' && outcome.activation !== 'activated') {
         outcome = { ...outcome, activation: 'activated' }
       }
     } finally {
-      if (cursorStarted && visualization !== undefined) {
+      // The retiring backend disposes its own overlay. Caller cancellation alone
+      // still needs cleanup on the backend that actually displayed the cursor.
+      if (cursorStarted && visualization !== undefined && !generationSignal.aborted && !this.lifecycle.signal.aborted) {
         try {
-          recordCursor(await this.backend.visualizeCursor(
+          recordCursor(await backend.visualizeCursor(
             visualization,
             'after',
-            AbortSignal.timeout(1_500),
+            AbortSignal.any([AbortSignal.timeout(1_500), generationSignal, this.lifecycle.signal]),
           ))
         } catch (error) {
           recordCursor({
@@ -669,6 +745,7 @@ export class ComputerUseService extends Service {
       { app: { bundleId: stored.backend.app.bundleId, pid: stored.backend.app.pid }, screenshot: stored.public.screenshot === undefined ? 'none' : 'optional' },
       context,
       'computer_action',
+      signal,
       latest,
     )
     signal.throwIfAborted()
@@ -715,15 +792,17 @@ export class ComputerUseService extends Service {
 
   /** Release all scoped observations and confirmations for one disposed Agent. */
   releaseAgent(agent: Agent): void {
+    const state = this.agents.get(agent)
     this.agents.delete(agent)
     this.leases.releaseAgent(agent)
     this.confirmations.releaseAgent(agent)
+    state?.lifetime.abort(new ComputerUseError('COMPUTER_CANCELLED', 'the Agent was disposed during this operation'))
   }
 
   private state(agent: Agent): AgentState {
     let state = this.agents.get(agent)
     if (state === undefined) {
-      state = { observations: new Map(), latestByApp: new Map() }
+      state = { lifetime: new AbortController(), observations: new Map(), latestByApp: new Map() }
       this.agents.set(agent, state)
     }
     return state
@@ -776,17 +855,23 @@ export class ComputerUseService extends Service {
     request: ComputerObserveRequest,
     context: ComputerUseContext,
     sourceTool: 'computer_observe' | 'computer_action',
+    signal: AbortSignal,
     preObserved?: BackendObservation,
   ): Promise<ComputerObservation> {
-    const signal = AbortSignal.any([context.signal, this.lifecycle.signal])
+    signal.throwIfAborted()
     const screenshot = request.screenshot ?? 'optional'
     const screenshotPath = screenshot === 'none'
       ? undefined
       : await allocateScreenshotPath(context.workspace, this.config.artifactRoot, context.agent.session.id)
-    const backend = preObserved !== undefined && screenshot === 'none'
-      ? preObserved
-      : await this.readSnapshot(app, screenshot, screenshotPath, signal)
-    return await this.recordObservation(backend, request.full === true, context, sourceTool)
+    try {
+      const backend = preObserved !== undefined && screenshot === 'none'
+        ? preObserved
+        : await this.readSnapshot(app, screenshot, screenshotPath, signal)
+      return await this.recordObservation(backend, request.full === true, context, sourceTool, signal)
+    } catch (error) {
+      if (screenshotPath !== undefined) await rm(screenshotPath, { force: true })
+      throw error
+    }
   }
 
   private async recordObservation(
@@ -794,7 +879,21 @@ export class ComputerUseService extends Service {
     full: boolean,
     context: ComputerUseContext,
     sourceTool: 'computer_observe' | 'computer_action',
+    signal: AbortSignal,
   ): Promise<ComputerObservation> {
+    signal.throwIfAborted()
+    const artifact = backend.screenshot === undefined
+      ? undefined
+      : await describeScreenshot(
+        backend.screenshot.path,
+        backend.screenshot.width,
+        backend.screenshot.height,
+        this.config.maxScreenshotBytes,
+        sourceTool,
+        screenshotPixelScale(backend),
+      )
+    // Read the diff baseline and commit without yielding after the final lifetime check.
+    signal.throwIfAborted()
     const state = this.state(context.agent)
     this.prune(context.agent)
     const key = `${backend.app.bundleId}:${backend.app.pid}`
@@ -807,25 +906,15 @@ export class ComputerUseService extends Service {
       : projectElementDiff(previous.public.elements, elements, this.config.maxTextBytes)
     const createdAt = Date.now()
     const observationId = ComputerObservationId(randomUUID())
-    const artifact = backend.screenshot === undefined
-      ? undefined
-      : await describeScreenshot(
-        backend.screenshot.path,
-        backend.screenshot.width,
-        backend.screenshot.height,
-        this.config.maxScreenshotBytes,
-        sourceTool,
-        screenshotPixelScale(backend),
-      )
     const observation: ComputerObservation = {
       observationId,
-      app: backend.app,
+      app: { ...backend.app },
       createdAt: new Date(createdAt).toISOString(),
       expiresAt: this.config.observationTtlMs === 0
         ? '9999-12-31T23:59:59.999Z'
         : new Date(createdAt + this.config.observationTtlMs).toISOString(),
       frontmost: backend.frontmost,
-      ...(backend.window === undefined ? {} : { window: backend.window }),
+      ...(backend.window === undefined ? {} : { window: { ...backend.window, frame: { ...backend.window.frame } } }),
       tree: {
         mode: diff === undefined ? 'full' : 'diff',
         text: diff?.text ?? backend.treeText,
@@ -833,7 +922,7 @@ export class ComputerUseService extends Service {
       },
       elements,
       ...(artifact === undefined ? {} : { screenshot: artifact }),
-      permissions: backend.permissions,
+      permissions: { ...backend.permissions },
     }
     state.observations.set(observationId, { public: observation, backend, targets: projected.targets, generation: this.generation })
     state.latestByApp.set(key, observationId)
@@ -860,6 +949,7 @@ export class ComputerUseService extends Service {
       )
     }
     await this.leases.ensure(context.agent, stored.backend.app, 'read', 'computer_wait', context.callId, signal)
+    signal.throwIfAborted()
     const timeoutMs = action.timeoutMs ?? this.config.maxSettleMs
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > this.config.maxSettleMs) {
       throw new ComputerUseError('COMPUTER_TIMEOUT', `wait timeout must be between 100 and ${this.config.maxSettleMs} milliseconds`)
@@ -893,7 +983,7 @@ export class ComputerUseService extends Service {
         captureScreenshot = false
         await delay(this.config.settleMs || 100, undefined, { signal: pollSignal })
       }
-      observation = await this.recordObservation(latest, false, context, 'computer_action')
+      observation = await this.recordObservation(latest, false, context, 'computer_action', pollSignal)
       if (observation.screenshot !== undefined) screenshotPath = undefined
     } catch (error) {
       if (deadline.aborted && !signal.aborted) {

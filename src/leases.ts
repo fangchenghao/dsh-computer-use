@@ -165,8 +165,10 @@ export class ComputerLeaseManager {
     callId: CallId | undefined,
     signal: AbortSignal,
   ): Promise<ComputerLeaseSource> {
+    signal.throwIfAborted()
     if (configuredAccess(this.config(), app.bundleId, scope)) return 'configured'
     return await this.enqueueDecision(agent.session.id, async () => {
+      signal.throwIfAborted()
       if (configuredAccess(this.config(), app.bundleId, scope)) return 'configured'
       return await this.ensureInteractive(agent, app, scope, toolName, callId, signal)
     })
@@ -186,6 +188,7 @@ export class ComputerLeaseManager {
     signal: AbortSignal,
   ): Promise<ComputerLeaseSource> {
     await this.prepareStorage()
+    signal.throwIfAborted()
     const sessionEvents = typeof (agent.session as any).snapshotEvents === 'function'
       ? (agent.session as any).snapshotEvents()
       : (agent.session as unknown as { events?: readonly SessionEvent[] }).events ?? []
@@ -229,6 +232,7 @@ export class ComputerLeaseManager {
         : `Allow this Agent to send UI input to ${app.name} (${app.bundleId}) for the current turn.`,
       signal,
     })
+    signal.throwIfAborted()
     if (outcome === 'cancelled') {
       throw new ComputerUseError('COMPUTER_CANCELLED', `${scope} access request for ${app.name} was cancelled`)
     }
@@ -236,7 +240,7 @@ export class ComputerLeaseManager {
       if (this.storage === undefined) {
         throw this.storageRequired(app, scope, 'the rejected interactive decision')
       }
-      await this.persist(agent, app, { kind: 'denied', scope })
+      await this.persist(agent, app, { kind: 'denied', scope }, signal)
       throw new ComputerUseError('COMPUTER_PERMISSION_REQUIRED', `${scope} access for ${app.name} was not granted (rejected); do not retry in this Session without new user instructions`)
     }
     if (outcome !== 'allowed-once') {
@@ -253,7 +257,7 @@ export class ComputerLeaseManager {
       return 'approved'
     }
 
-    await this.persist(agent, app, { kind: 'read-granted' })
+    await this.persist(agent, app, { kind: 'read-granted' }, signal)
     return 'approved'
   }
 
@@ -273,6 +277,7 @@ export class ComputerLeaseManager {
     agent: Agent,
     app: ComputerAppIdentity,
     decision: { kind: 'read-granted' } | { kind: 'denied'; scope: 'read' | 'control' },
+    signal: AbortSignal,
   ): Promise<void> {
     const purpose = decision.kind === 'read-granted'
       ? 'the Session-wide read grant'
@@ -283,6 +288,7 @@ export class ComputerLeaseManager {
         throw new Error('no Session persistence listener participated in ctx.sessions.flush')
       }
       await this.enqueueMutation(agent.session.id, async () => {
+        signal.throwIfAborted()
         const binding = this.storage
         if (binding === undefined) throw this.storageRequired(app, decision.kind === 'read-granted' ? 'read' : decision.scope, purpose)
         const current = binding.table.get(agent.session.id)
@@ -299,7 +305,7 @@ export class ComputerLeaseManager {
         await binding.table.put(agent.session.id, stateSnapshot(agent.session.header, readGrants, denied))
       })
     } catch (error) {
-      if (error instanceof ComputerUseError) throw error
+      if (error instanceof ComputerUseError || (signal.aborted && error === signal.reason)) throw error
       throw new ComputerUseError(
         'COMPUTER_PERMISSION_REQUIRED',
         `${purpose} for ${app.name} could not be persisted after the approval audit: ${boundedFailure(error)}; configure working Session persistence and @deepseek-ai/dsh-storage-domain before retrying`,
