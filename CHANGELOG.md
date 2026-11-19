@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.9 — 2026-11-19
+
+- Preserve the requested mouse button and click count. A successful Accessibility press is delivered once, including when a button has no visible effect. After activating an app for keyboard input, verify which window will receive the keys.
+- Cancel pending operations and approvals when settings change or the agent closes. Reject conflicting target identifiers and ambiguous window captures. Wait conditions use fresh observations and match properties on the same element.
+- Reduce repeated Accessibility traversal and compute target fingerprints on demand. Compact tool results retain all fields. Oversized native observations return a marked, usable prefix within the 4 MiB protocol limit.
+- Preserve the helper’s executable permission in the npm package. Disabling automatic updates cancels a pending automatic installation.
+- 按请求派发鼠标按键与点击次数。即使按钮执行后没有可见变化，成功的辅助功能点击也只执行一次。为键盘输入激活应用后，会再次核对接收按键的窗口。
+- 更新设置或关闭 agent 时，取消进行中的操作和审批。目标原生标识冲突或截图窗口有歧义时停止。等待条件使用新观测，并在同一个元素上核对属性。
+- 减少重复遍历辅助功能树，按需计算目标指纹。紧凑工具输出保留全部字段。超大的原生观测会返回 4 MiB 协议上限内的可用前缀，并标记已截断。
+- npm 安装包保留原生程序的可执行权限。关闭自动更新会取消尚未开始的自动安装。
+
 ## 0.4.8 — 2026-11-18
 
 - Stop silently escalating app grants: a grant with `read: false` and `control: false` was projected into the Settings form as `read` and came back as a readable grant on the next save. The form now round-trips it as `none`, rejects mixed `none` scopes, and keeps disabled entries through unrelated saves.
