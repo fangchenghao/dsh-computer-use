@@ -26,6 +26,17 @@ function observation(elements: BackendElement[], overrides: Partial<BackendObser
 }
 
 describe('provider-independent target resolver', () => {
+  it('keeps the nearest four available ancestors in root-to-parent order on a sparse tree', () => {
+    const rows = [0, 1, 3, 4, 6, 7].map((depth, index) => target({
+      index,
+      locator: Array<number>(depth).fill(0),
+      label: `depth ${depth}`,
+    }))
+    const descriptor = describeComputerTarget(rows.at(-1)!, observation(rows))
+    expect(descriptor.ancestorFingerprint.map(ancestor => ancestor.accessibleName))
+      .toEqual(['depth 1', 'depth 3', 'depth 4', 'depth 6'])
+  })
+
   it('uses the original locator when stable identity is unchanged', () => {
     const original = observation([target({ index: 0, locator: [] })])
     const fresh = observation([target({ index: 0, locator: [], enabled: false })], { stateHash: 'state-2' })

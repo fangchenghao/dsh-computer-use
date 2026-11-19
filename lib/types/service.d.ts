@@ -50,7 +50,9 @@ export declare class ComputerUseService extends Service {
     private state;
     private requireObservation;
     private prune;
+    private readSnapshot;
     private capture;
+    private recordObservation;
     private wait;
     private clearState;
 }

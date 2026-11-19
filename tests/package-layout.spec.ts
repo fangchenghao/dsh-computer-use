@@ -10,6 +10,7 @@ const PACKAGE = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) a
   types: string
   exports: Record<string, unknown>
   files: string[]
+  publishConfig?: { executableFiles?: string[] }
   scripts: Record<string, string>
   dsh?: {
     bundle?: { patch?: string }
@@ -76,6 +77,7 @@ describe('published package layout', () => {
   })
 
   it('ships runtime, source, native inputs, validation, docs, and license', async () => {
+    expect(PACKAGE.publishConfig?.executableFiles).toContain('native/macos/bin/dsh-computer-use-helper')
     for (const required of [
       'lib',
       'src',

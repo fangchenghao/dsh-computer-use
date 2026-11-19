@@ -1,6 +1,7 @@
 /** Provider-independent Computer Use Service: leases, observations, staleness, confirmations, and fresh post-action state. */
 
 import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -8,11 +9,12 @@ import type { BackendActionResult, BackendCursorAction, BackendHealth, BackendOb
 import { allocateScreenshotPath, describeScreenshot } from './artifacts.ts'
 import type { ResolvedComputerUseConfig } from './config.ts'
 import { ComputerConfirmationManager } from './confirmations.ts'
-import { diffElements } from './diff.ts'
+import { projectElementDiff } from './diff.ts'
 import { ComputerUseError, computerUseError } from './errors.ts'
 import { ComputerLeaseManager } from './leases.ts'
 import {
   describeComputerTarget,
+  indexElementsByLocator,
   resolveComputerTarget,
   type ComputerTargetDescriptor,
 } from './target-resolver.ts'
@@ -28,6 +30,7 @@ import {
   type ComputerElement,
   type ComputerObservation,
   type ComputerObserveRequest,
+  type ComputerScreenshotMode,
   type ComputerTargetResolutionResult,
   type ComputerUseContext,
   type ComputerUseStatus,
@@ -56,10 +59,11 @@ function publicElements(observation: BackendObservation): {
   targets: Map<ComputerTargetHandle, ComputerTargetDescriptor>
 } {
   const targets = new Map<ComputerTargetHandle, ComputerTargetDescriptor>()
+  const byLocator = indexElementsByLocator(observation)
   const elements = observation.elements.map((backendElement) => {
     const { locator: _locator, nativeIdentifier: _nativeIdentifier, ...element } = backendElement
     const targetHandle = ComputerTargetHandle(randomUUID())
-    targets.set(targetHandle, describeComputerTarget(backendElement, observation))
+    targets.set(targetHandle, describeComputerTarget(backendElement, observation, byLocator))
     return { ...element, targetHandle }
   })
   return { elements, targets }
@@ -192,11 +196,11 @@ function hasWaitCondition(condition: Extract<ComputerActionRequest, { kind: 'wai
 }
 
 function matchesWait(observation: BackendObservation, action: Extract<ComputerActionRequest, { kind: 'wait' }>): boolean {
-  const condition = action.condition
-  if (condition.text !== undefined && !observation.treeText.toLocaleLowerCase().includes(condition.text.toLocaleLowerCase())) return false
-  if (condition.elementRole !== undefined && !observation.elements.some(element => element.role === condition.elementRole)) return false
-  if (condition.elementTitle !== undefined && !observation.elements.some(element => element.title === condition.elementTitle || element.label === condition.elementTitle)) return false
-  return hasWaitCondition(condition)
+  const { text, elementRole, elementTitle } = action.condition
+  if (text !== undefined && !observation.treeText.toLocaleLowerCase().includes(text.toLocaleLowerCase())) return false
+  if (elementRole === undefined && elementTitle === undefined) return true
+  return observation.elements.some(element => (elementRole === undefined || element.role === elementRole)
+    && (elementTitle === undefined || element.title === elementTitle || element.label === elementTitle))
 }
 
 function targetIndex(action: ComputerActionRequest): number | undefined {
@@ -657,13 +661,7 @@ export class ComputerUseService extends Service {
     do {
       signal.throwIfAborted()
       if (this.config.settleMs > 0) await delay(this.config.settleMs, undefined, { signal })
-      latest = await this.backend.observe(stored.backend.app, {
-        screenshot: 'none',
-        maxNodes: this.config.maxNodes,
-        maxDepth: this.config.maxDepth,
-        maxTextBytes: this.config.maxTextBytes,
-      }, signal)
-      signal.throwIfAborted()
+      latest = await this.readSnapshot(stored.backend.app, 'none', undefined, signal)
       if (latest.stateHash !== actionObservation.stateHash) { settled = true; break }
     } while (Date.now() - started < this.config.maxSettleMs)
     const observation = await this.capture(
@@ -752,6 +750,27 @@ export class ComputerUseService extends Service {
     }
   }
 
+  private async readSnapshot(
+    app: ComputerAppIdentity,
+    screenshot: ComputerScreenshotMode,
+    screenshotPath: string | undefined,
+    signal: AbortSignal,
+  ): Promise<BackendObservation> {
+    signal.throwIfAborted()
+    const backend = await this.backend.observe(app, {
+      screenshot,
+      ...(screenshotPath === undefined ? {} : { screenshotPath }),
+      maxNodes: this.config.maxNodes,
+      maxDepth: this.config.maxDepth,
+      maxTextBytes: this.config.maxTextBytes,
+    }, signal)
+    signal.throwIfAborted()
+    if (backend.app.bundleId !== app.bundleId || backend.app.pid !== app.pid) {
+      throw new ComputerUseError('COMPUTER_STALE_OBSERVATION', 'the selected application restarted or resolved to a different process')
+    }
+    return backend
+  }
+
   private async capture(
     app: ComputerAppIdentity,
     request: ComputerObserveRequest,
@@ -766,24 +785,26 @@ export class ComputerUseService extends Service {
       : await allocateScreenshotPath(context.workspace, this.config.artifactRoot, context.agent.session.id)
     const backend = preObserved !== undefined && screenshot === 'none'
       ? preObserved
-      : await this.backend.observe(app, {
-        screenshot,
-        ...(screenshotPath === undefined ? {} : { screenshotPath }),
-        maxNodes: this.config.maxNodes,
-        maxDepth: this.config.maxDepth,
-        maxTextBytes: this.config.maxTextBytes,
-      }, signal)
-    if (backend.app.bundleId !== app.bundleId || backend.app.pid !== app.pid) {
-      throw new ComputerUseError('COMPUTER_STALE_OBSERVATION', 'the selected application restarted or resolved to a different process')
-    }
+      : await this.readSnapshot(app, screenshot, screenshotPath, signal)
+    return await this.recordObservation(backend, request.full === true, context, sourceTool)
+  }
+
+  private async recordObservation(
+    backend: BackendObservation,
+    full: boolean,
+    context: ComputerUseContext,
+    sourceTool: 'computer_observe' | 'computer_action',
+  ): Promise<ComputerObservation> {
     const state = this.state(context.agent)
     this.prune(context.agent)
-    const key = `${app.bundleId}:${app.pid}`
+    const key = `${backend.app.bundleId}:${backend.app.pid}`
     const previousId = state.latestByApp.get(key)
     const previous = previousId === undefined ? undefined : state.observations.get(previousId)
     const projected = publicElements(backend)
     const elements = projected.elements
-    const full = request.full === true || previous === undefined
+    const diff = full || previous === undefined
+      ? undefined
+      : projectElementDiff(previous.public.elements, elements, this.config.maxTextBytes)
     const createdAt = Date.now()
     const observationId = ComputerObservationId(randomUUID())
     const artifact = backend.screenshot === undefined
@@ -806,9 +827,9 @@ export class ComputerUseService extends Service {
       frontmost: backend.frontmost,
       ...(backend.window === undefined ? {} : { window: backend.window }),
       tree: {
-        mode: full ? 'full' : 'diff',
-        text: full ? backend.treeText : diffElements(previous.public.elements, elements, this.config.maxTextBytes),
-        truncated: backend.truncated,
+        mode: diff === undefined ? 'full' : 'diff',
+        text: diff?.text ?? backend.treeText,
+        truncated: backend.truncated || diff?.truncated === true,
       },
       elements,
       ...(artifact === undefined ? {} : { screenshot: artifact }),
@@ -844,25 +865,44 @@ export class ComputerUseService extends Service {
       throw new ComputerUseError('COMPUTER_TIMEOUT', `wait timeout must be between 100 and ${this.config.maxSettleMs} milliseconds`)
     }
     const started = Date.now()
-    const deadline = started + timeoutMs
-    let latest = stored.backend
-    while (!matchesWait(latest, action)) {
-      if (Date.now() >= deadline) throw new ComputerUseError('COMPUTER_TIMEOUT', 'wait condition was not met before the configured deadline')
-      await delay(Math.min(this.config.settleMs || 100, Math.max(1, deadline - Date.now())), undefined, { signal })
-      latest = await this.backend.observe(stored.backend.app, {
-        screenshot: 'none',
-        maxNodes: this.config.maxNodes,
-        maxDepth: this.config.maxDepth,
-        maxTextBytes: this.config.maxTextBytes,
-      }, signal)
+    const deadline = AbortSignal.timeout(timeoutMs)
+    const pollSignal = AbortSignal.any([signal, deadline])
+    const wantsScreenshot = stored.public.screenshot !== undefined
+    const previouslyMatched = matchesWait(stored.backend, action)
+    let captureScreenshot = wantsScreenshot && previouslyMatched
+    let screenshotPath: string | undefined
+    let latest: BackendObservation
+    let observation: ComputerObservation
+    try {
+      for (;;) {
+        if (captureScreenshot && screenshotPath === undefined) {
+          screenshotPath = await allocateScreenshotPath(context.workspace, this.config.artifactRoot, context.agent.session.id)
+        }
+        latest = await this.readSnapshot(
+          stored.backend.app,
+          captureScreenshot ? 'optional' : 'none',
+          captureScreenshot ? screenshotPath : undefined,
+          pollSignal,
+        )
+        if (matchesWait(latest, action)) {
+          if (!wantsScreenshot || captureScreenshot) break
+          // Recheck the condition on the same snapshot that provides the optional image.
+          captureScreenshot = true
+          continue
+        }
+        captureScreenshot = false
+        await delay(this.config.settleMs || 100, undefined, { signal: pollSignal })
+      }
+      observation = await this.recordObservation(latest, false, context, 'computer_action')
+      if (observation.screenshot !== undefined) screenshotPath = undefined
+    } catch (error) {
+      if (deadline.aborted && !signal.aborted) {
+        throw new ComputerUseError('COMPUTER_TIMEOUT', 'wait condition was not met before the configured deadline', { cause: error })
+      }
+      throw error
+    } finally {
+      if (screenshotPath !== undefined) await rm(screenshotPath, { force: true })
     }
-    const observation = await this.capture(
-      stored.backend.app,
-      { app: { bundleId: stored.backend.app.bundleId, pid: stored.backend.app.pid }, screenshot: stored.public.screenshot === undefined ? 'none' : 'optional' },
-      context,
-      'computer_action',
-      latest,
-    )
     return {
       action: 'wait',
       channel: 'wait',
@@ -870,7 +910,7 @@ export class ComputerUseService extends Service {
       effect: {
         observedStateChanged: latest.stateHash !== stored.backend.stateHash,
         observedForMs: Date.now() - started,
-        ...(latest.stateHash === stored.backend.stateHash
+        ...(previouslyMatched && latest.stateHash === stored.backend.stateHash
           ? { note: 'the wait condition was already satisfied by the referenced observation' }
           : {}),
       },

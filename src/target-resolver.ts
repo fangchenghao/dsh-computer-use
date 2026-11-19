@@ -50,6 +50,13 @@ function locatorKey(locator: readonly number[]): string {
   return locator.join('.')
 }
 
+/** Index only the elements of this observation, including unlabelled ancestors. */
+export function indexElementsByLocator(observation: BackendObservation): ReadonlyMap<string, BackendElement> {
+  const index = new Map<string, BackendElement>()
+  for (const element of observation.elements) index.set(locatorKey(element.locator), element)
+  return index
+}
+
 function sameLocator(left: readonly number[], right: readonly number[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
@@ -122,10 +129,10 @@ function failLowConfidence(candidateCount: number, reason: string): never {
 export function describeComputerTarget(
   element: BackendElement,
   observation: BackendObservation,
+  byLocator = indexElementsByLocator(observation),
 ): ComputerTargetDescriptor {
-  const byLocator = new Map(observation.elements.map(candidate => [locatorKey(candidate.locator), candidate]))
   const ancestors: AncestorFingerprintEntry[] = []
-  for (let depth = 0; depth < element.locator.length; depth += 1) {
+  for (let depth = element.locator.length - 1; depth >= 0 && ancestors.length < 4; depth -= 1) {
     const ancestor = byLocator.get(locatorKey(element.locator.slice(0, depth)))
     if (ancestor === undefined) continue
     const name = accessibleName(ancestor)
@@ -153,7 +160,7 @@ export function describeComputerTarget(
     role: element.role,
     ...(element.subrole === undefined ? {} : { subrole: element.subrole }),
     ...(name === undefined ? {} : { accessibleName: name }),
-    ancestorFingerprint: ancestors.slice(-4),
+    ancestorFingerprint: ancestors.reverse(),
     ...(normalizedFrame === undefined ? {} : { normalizedFrame }),
     availableActions: [...new Set(element.actions)].sort(),
   }
@@ -173,11 +180,12 @@ export function resolveComputerTarget(
     throw new ComputerUseError('COMPUTER_STALE_OBSERVATION', 'the selected window changed after the referenced observation')
   }
 
-  const descriptors = fresh.elements.map(element => ({ element, descriptor: describeComputerTarget(element, fresh) }))
-  const exact = descriptors.find(candidate => sameLocator(candidate.element.locator, expected.locator))
-  if (exact !== undefined && sameExactIdentity(expected, exact.descriptor)) {
+  const byLocator = indexElementsByLocator(fresh)
+  const describe = (element: BackendElement) => describeComputerTarget(element, fresh, byLocator)
+  const exact = fresh.elements.find(element => sameLocator(element.locator, expected.locator))
+  if (exact !== undefined && sameExactIdentity(expected, describe(exact))) {
     return {
-      element: exact.element,
+      element: exact,
       observation: fresh,
       resolution: {
         mode: 'exact-locator',
@@ -196,14 +204,14 @@ export function resolveComputerTarget(
   }
 
   if (expected.nativeIdentifier !== undefined) {
-    const nativeMatches = descriptors.filter(candidate => candidate.descriptor.nativeIdentifier === expected.nativeIdentifier)
+    const nativeMatches = fresh.elements.filter(element => normalizedText(element.nativeIdentifier) === expected.nativeIdentifier)
     if (nativeMatches.length > 1) failAmbiguous('native identifier', nativeMatches.length)
     if (nativeMatches.length === 1) {
-      if (!sameStableFields(expected, nativeMatches[0]!.descriptor)) {
+      if (!sameStableFields(expected, describe(nativeMatches[0]!))) {
         failLowConfidence(1, 'the native identifier resolved to an element with different stable semantics')
       }
       return {
-        element: nativeMatches[0]!.element,
+        element: nativeMatches[0]!,
         observation: fresh,
         resolution: {
           mode: 'native-identifier',
@@ -218,14 +226,14 @@ export function resolveComputerTarget(
   if (expected.accessibleName === undefined) {
     failLowConfidence(0, 'the target has no native identifier or accessible name')
   }
-  const semanticMatches = descriptors.filter(candidate => sameSemanticIdentity(expected, candidate.descriptor))
+  const semanticMatches = fresh.elements.filter(element => sameSemanticIdentity(expected, describe(element)))
   if (semanticMatches.length > 1) failAmbiguous('semantic', semanticMatches.length)
   if (semanticMatches.length === 0) failLowConfidence(0, 'no candidate retained the target role, accessible name, actions, and ancestor fingerprint')
   if (TARGET_RESOLUTION_CONFIDENCE.semantic < TARGET_RESOLUTION_CONFIDENCE.semanticThreshold) {
     failLowConfidence(semanticMatches.length, 'the deterministic semantic score is below the configured threshold')
   }
   return {
-    element: semanticMatches[0]!.element,
+    element: semanticMatches[0]!,
     observation: fresh,
     resolution: {
       mode: 'semantic-rebind',

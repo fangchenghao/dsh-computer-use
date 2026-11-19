@@ -30,8 +30,10 @@ export interface ResolvedComputerTarget {
     observation: BackendObservation;
     resolution: ComputerTargetResolutionResult;
 }
+/** Index only the elements of this observation, including unlabelled ancestors. */
+export declare function indexElementsByLocator(observation: BackendObservation): ReadonlyMap<string, BackendElement>;
 /** Build the normalized descriptor stored behind one opaque handle. */
-export declare function describeComputerTarget(element: BackendElement, observation: BackendObservation): ComputerTargetDescriptor;
+export declare function describeComputerTarget(element: BackendElement, observation: BackendObservation, byLocator?: ReadonlyMap<string, BackendElement>): ComputerTargetDescriptor;
 /** Resolve one descriptor against a fresh provider observation without guessing. */
 export declare function resolveComputerTarget(original: BackendObservation, fresh: BackendObservation, expected: ComputerTargetDescriptor, allowRebind: boolean): ResolvedComputerTarget;
 export {};

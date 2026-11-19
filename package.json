@@ -24,6 +24,11 @@
   },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "publishConfig": {
+    "executableFiles": [
+      "native/macos/bin/dsh-computer-use-helper"
+    ]
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",

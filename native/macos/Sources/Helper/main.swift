@@ -226,37 +226,64 @@ private func axCopy(_ element: AXUIElement, _ attribute: CFString) -> Any? {
     return result == .success ? value : nil
 }
 
-private func axString(_ element: AXUIElement, _ attribute: CFString) -> String? {
-    if let value = axCopy(element, attribute) as? String, !value.isEmpty { return value }
-    if let value = axCopy(element, attribute) as? NSAttributedString, !value.string.isEmpty { return value.string }
+private func axString(_ raw: Any?) -> String? {
+    if let value = raw as? String, !value.isEmpty { return value }
+    if let value = raw as? NSAttributedString, !value.string.isEmpty { return value.string }
     return nil
+}
+
+private func axString(_ element: AXUIElement, _ attribute: CFString) -> String? {
+    axString(axCopy(element, attribute))
 }
 
 private func axBool(_ element: AXUIElement, _ attribute: CFString) -> Bool? {
     (axCopy(element, attribute) as? NSNumber)?.boolValue
 }
 
-private func axPoint(_ element: AXUIElement, _ attribute: CFString) -> CGPoint? {
-    guard let value = axCopy(element, attribute), CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
+private func axPoint(_ raw: Any?) -> CGPoint? {
+    guard let value = raw, CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
     let axValue = value as! AXValue
     guard AXValueGetType(axValue) == .cgPoint else { return nil }
     var point = CGPoint.zero
     return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
 }
 
-private func axSize(_ element: AXUIElement, _ attribute: CFString) -> CGSize? {
-    guard let value = axCopy(element, attribute), CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
+private func axSize(_ raw: Any?) -> CGSize? {
+    guard let value = raw, CFGetTypeID(value as CFTypeRef) == AXValueGetTypeID() else { return nil }
     let axValue = value as! AXValue
     guard AXValueGetType(axValue) == .cgSize else { return nil }
     var size = CGSize.zero
     return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
 }
 
-private func axFrame(_ element: AXUIElement) -> CGRect? {
-    guard let position = axPoint(element, kAXPositionAttribute as CFString),
-          let size = axSize(element, kAXSizeAttribute as CFString),
+private func axFrame(position: Any?, size: Any?) -> CGRect? {
+    guard let position = axPoint(position), let size = axSize(size),
           size.width >= 0, size.height >= 0 else { return nil }
     return CGRect(origin: position, size: size)
+}
+
+private func axFrame(_ element: AXUIElement) -> CGRect? {
+    axFrame(position: axCopy(element, kAXPositionAttribute as CFString), size: axCopy(element, kAXSizeAttribute as CFString))
+}
+
+// AXValue is read separately, only after the role and subrole exclude a secure field.
+private let snapshotAttributeNames = [
+    kAXRoleAttribute, kAXSubroleAttribute, kAXIdentifierAttribute, kAXTitleAttribute,
+    kAXDescriptionAttribute, kAXEnabledAttribute, kAXFocusedAttribute, kAXSelectedAttribute,
+    kAXPositionAttribute, kAXSizeAttribute,
+]
+
+private func snapshotAttributes(_ element: AXUIElement) -> [String: Any] {
+    var values: CFArray?
+    if AXUIElementCopyMultipleAttributeValues(element, snapshotAttributeNames as CFArray, [], &values) == .success,
+       let values, CFArrayGetCount(values) == snapshotAttributeNames.count {
+        // Unsupported individual attributes arrive as CFNull or an AX error value.
+        // The typed readers below treat either as an absent string, flag or frame.
+        return Dictionary(uniqueKeysWithValues: zip(snapshotAttributeNames, values as NSArray))
+    }
+    var result: [String: Any] = [:]
+    for name in snapshotAttributeNames { result[name] = axCopy(element, name as CFString) }
+    return result
 }
 
 private func rectJSON(_ rect: CGRect) -> [String: Any] {
@@ -479,12 +506,12 @@ private func observeSnapshot(app: NSRunningApplication, limits: [String: Any]) t
         let identity = CFHash(element)
         if seen.contains(identity) { continue }
         seen.insert(identity)
-        let role = axString(element, kAXRoleAttribute as CFString) ?? "AXUnknown"
-        let subrole = axString(element, kAXSubroleAttribute as CFString)
-        let nativeIdentifier = axString(element, kAXIdentifierAttribute as CFString)
-        let titleValue = axString(element, kAXTitleAttribute as CFString)
-        let descriptionValue = axString(element, kAXDescriptionAttribute as CFString)
-        let labelValue = titleValue ?? descriptionValue
+        let attributes = snapshotAttributes(element)
+        let role = axString(attributes[kAXRoleAttribute]) ?? "AXUnknown"
+        let subrole = axString(attributes[kAXSubroleAttribute])
+        let nativeIdentifier = axString(attributes[kAXIdentifierAttribute])
+        let titleValue = axString(attributes[kAXTitleAttribute])
+        let labelValue = titleValue ?? axString(attributes[kAXDescriptionAttribute])
         let secure = role == "AXSecureTextField" || subrole == "AXSecureTextField"
         let valueValue: String? = secure ? "[secure]" : {
             guard let raw = axCopy(element, kAXValueAttribute as CFString) else { return nil }
@@ -492,10 +519,10 @@ private func observeSnapshot(app: NSRunningApplication, limits: [String: Any]) t
             if let number = raw as? NSNumber { return number.stringValue }
             return nil
         }()
-        let enabled = axBool(element, kAXEnabledAttribute as CFString)
-        let focused = axBool(element, kAXFocusedAttribute as CFString)
-        let selected = axBool(element, kAXSelectedAttribute as CFString)
-        let elementFrame = axFrame(element)
+        let enabled = (attributes[kAXEnabledAttribute] as? NSNumber)?.boolValue
+        let focused = (attributes[kAXFocusedAttribute] as? NSNumber)?.boolValue
+        let selected = (attributes[kAXSelectedAttribute] as? NSNumber)?.boolValue
+        let elementFrame = axFrame(position: attributes[kAXPositionAttribute], size: attributes[kAXSizeAttribute])
         let actions = axActions(element)
         let index = records.count
         var json: [String: Any] = [
@@ -506,8 +533,9 @@ private func observeSnapshot(app: NSRunningApplication, limits: [String: Any]) t
         ]
         if let subrole { json["subrole"] = subrole }
         if let nativeIdentifier { json["nativeIdentifier"] = sanitize(nativeIdentifier) }
-        if let titleValue { json["title"] = sanitize(titleValue) }
-        if let labelValue { json["label"] = sanitize(labelValue) }
+        let displayName = labelValue.map { sanitize($0) }
+        if titleValue != nil { json["title"] = displayName }
+        json["label"] = displayName
         if let valueValue { json["value"] = valueValue }
         if let enabled { json["enabled"] = enabled }
         if let focused { json["focused"] = focused }
@@ -523,8 +551,7 @@ private func observeSnapshot(app: NSRunningApplication, limits: [String: Any]) t
         ]
         let hashLine = hashComponents.joined(separator: "|")
         var line = String(repeating: "  ", count: min(depth, 20)) + "[\(index)] \(role)"
-        if let titleValue { line += " \(jsonString(sanitize(titleValue)))" }
-        else if let labelValue { line += " \(jsonString(sanitize(labelValue)))" }
+        if let displayName { line += " \(jsonString(displayName))" }
         if let valueValue { line += " value=\(jsonString(valueValue))" }
         if enabled == false { line += " disabled" }
         if focused == true { line += " focused" }

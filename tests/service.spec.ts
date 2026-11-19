@@ -1,4 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
+import { readdir } from 'node:fs/promises'
+import { basename, dirname } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalOutcome, ApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import { resolveConfig, type ComputerUseConfig } from '../src/config.ts'
@@ -1557,6 +1559,104 @@ describe('Computer Use Service', () => {
         code: 'COMPUTER_CONFIRMATION_REQUIRED',
       })
       expect(backend.actions).toHaveLength(0)
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('builds handles for a wide tree with linear locator reads', async () => {
+    const { service, backend } = serviceHarness()
+    const context = callContext(fakeAgent('/fixture'), '/fixture')
+    let reads = 0
+    const elements = Array.from({ length: 128 }, (_, index) => {
+      const locator = index === 0 ? [] : [index - 1]
+      return {
+        index, role: index === 0 ? 'AXWindow' : 'AXButton', actions: [],
+        get locator() {
+          reads++
+          return locator
+        },
+      }
+    })
+    vi.spyOn(backend, 'observe').mockResolvedValue(backendObservation({ elements }))
+    const observed = await service.observe({ app: FIXTURE_APP, screenshot: 'none' }, context)
+    expect(new Set(observed.elements.map(element => element.targetHandle)).size).toBe(elements.length)
+    // Count work instead of timing the host. Reindexing for every row costs N² reads.
+    expect(reads).toBeLessThan(elements.length * 12)
+  })
+
+  it('marks a clipped diff even when both source trees fit the byte limit', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-diff-')
+    try {
+      const { backend, service } = serviceHarness({ maxTextBytes: 1024 })
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const request = { app: FIXTURE_APP, screenshot: 'none' as const }
+      for (const version of ['前', '后']) {
+        const elements = Array.from({ length: 8 }, (_, index) => ({
+          index, locator: [index], role: 'AXButton', title: version.repeat(30) + index, actions: ['AXPress'],
+        }))
+        const treeText = elements.map(row => `[${row.index}] AXButton "${row.title}"`).join('\n')
+        expect(Buffer.byteLength(treeText)).toBeLessThan(1024)
+        backend.observation = backendObservation({ elements, treeText, truncated: false })
+        const observation = await service.observe(request, context)
+        expect(observation.tree.truncated).toBe(version === '后')
+        expect(Buffer.byteLength(observation.tree.text)).toBeLessThanOrEqual(1024)
+      }
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it.each(['none', 'required'] as const)('rechecks a formerly matching control and cleans up unmatched images (%s)', async screenshot => {
+    const workspace = await temporaryDirectory('dsh-computer-wait-stale-')
+    try {
+      const { backend, service } = serviceHarness({ settleMs: 10, maxSettleMs: 200 })
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const before = await service.observe({ app: FIXTURE_APP, screenshot }, context)
+      backend.observation = backendObservation({
+        stateHash: 'different-controls',
+        elements: [
+          { index: 0, locator: [], role: 'AXButton', title: 'Cancel', actions: ['AXPress'] },
+          { index: 1, locator: [0], role: 'AXStaticText', title: 'Apply', actions: [] },
+        ],
+      })
+      await expect(service.act({
+        kind: 'wait', observationId: before.observationId, timeoutMs: 100,
+        condition: { elementRole: 'AXButton', elementTitle: 'Apply' },
+      }, context)).rejects.toMatchObject({ code: 'COMPUTER_TIMEOUT' })
+      expect(backend.observations.length).toBeGreaterThan(1)
+      if (before.screenshot !== undefined) {
+        expect(await readdir(dirname(before.screenshot.path))).toEqual([basename(before.screenshot.path)])
+      }
+    } finally {
+      await workspace.cleanup()
+    }
+  })
+
+  it('returns the matching screenshot snapshot when a condition disappears during capture', async () => {
+    const workspace = await temporaryDirectory('dsh-computer-wait-transient-')
+    try {
+      const { backend, service } = serviceHarness({ settleMs: 10, maxSettleMs: 500 })
+      const context = callContext(fakeAgent(workspace.path), workspace.path)
+      const before = await service.observe({ app: FIXTURE_APP, screenshot: 'required' }, context)
+      const observe = backend.observe.bind(backend)
+      const states = ['Ready', 'Busy', 'Ready', 'Ready']
+      vi.spyOn(backend, 'observe').mockImplementation((app, options) => {
+        const title = states.shift()
+        if (title === undefined) throw new Error('unexpected extra observation')
+        backend.observation = backendObservation({
+          stateHash: title, treeText: title,
+          elements: [{ index: 0, locator: [], role: 'AXButton', title, actions: ['AXPress'] }],
+        })
+        return observe(app, options)
+      })
+      const result = await service.act({
+        kind: 'wait', observationId: before.observationId, condition: { elementTitle: 'Ready' },
+      }, context)
+      expect(result.observation.elements[0]?.title).toBe('Ready')
+      expect(result.observation.screenshot).toBeDefined()
+      expect(backend.observations.map(call => call.screenshot)).toEqual(['required', 'none', 'optional', 'none', 'optional'])
+      expect(await readdir(dirname(before.screenshot!.path))).toHaveLength(2)
     } finally {
       await workspace.cleanup()
     }
